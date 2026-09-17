@@ -1,0 +1,10 @@
+# Go
+/bin/
+webterm
+
+# Frontend
+web/node_modules/
+web/dist/
+
+# Editor / OS
+.DS_Store
