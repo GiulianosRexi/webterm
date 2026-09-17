@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
+import { WebglAddon } from '@xterm/addon-webgl'
 
 export type ConnState = 'connecting' | 'open' | 'closed' | 'exited'
 
@@ -36,11 +37,17 @@ export function TerminalView({ onState }: { onState: (s: ConnState) => void }) {
       allowProposedApi: true,
       scrollback: 10000,
       macOptionIsMeta: true,
+      // Dibuja los bloques (█ ▀ ▄) y el box drawing de forma procedural en vez
+      // de con los glyphs de la fuente, que dejan gaps entre filas. Solo tiene
+      // efecto con el renderer WebGL, de ahí loadWebgl() más abajo.
+      customGlyphs: true,
+      rescaleOverlappingGlyphs: true,
     })
     const fit = new FitAddon()
     term.loadAddon(fit)
     term.loadAddon(new WebLinksAddon())
     term.open(host)
+    loadWebgl(term)
     fit.fit()
 
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -114,4 +121,19 @@ export function TerminalView({ onState }: { onState: (s: ConnState) => void }) {
   }, [])
 
   return <div className="terminal-host" ref={hostRef} />
+}
+
+// loadWebgl activa el renderer WebGL, necesario para que customGlyphs tenga
+// efecto (el renderer DOM siempre usa la fuente). Si no hay WebGL disponible
+// seguimos con el DOM renderer: se ve peor, pero funciona.
+function loadWebgl(term: Terminal) {
+  try {
+    const addon = new WebglAddon()
+    // Al perder el contexto (GPU reset, tab dormida) disposeamos el addon:
+    // xterm vuelve solo al renderer DOM en vez de quedarse en negro.
+    addon.onContextLoss(() => addon.dispose())
+    term.loadAddon(addon)
+  } catch (err) {
+    console.warn('WebTerm: sin renderer WebGL, se usa el DOM renderer', err)
+  }
 }
