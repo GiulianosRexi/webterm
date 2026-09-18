@@ -7,19 +7,22 @@ una UI web. Backend en Go (pty real vía `creack/pty`), frontend React plano con
 El diseño completo y el roadmap por milestones están en
 [`webterm-diseno.md`](./webterm-diseno.md).
 
-## Estado: M1 (MVP)
+## Estado: M2
 
 - [x] **M1** — terminal web básica: un pty por conexión WebSocket, input/output,
       resize, true color, mouse.
-- [ ] **M2** — persistencia de sesiones (session manager + ring buffer) y ABM.
+- [x] **M2** — persistencia de sesiones (SQLite + session manager) y ABM.
 - [ ] **M3** — UI multi-terminal (tabs).
 - [ ] **M4** — folders.
 - [ ] **M5** — CLI local `webterm`.
 - [ ] **M6** — integración con Claude Code (hooks).
 - [ ] **M7** — estado administrativo y dashboard.
 
-En M1 la sesión vive atada al WebSocket: cerrar la pestaña mata el proceso.
-Eso cambia en M2.
+Desde M2 el pty vive en el backend, no en la conexión: cerrar la pestaña solo
+cierra el socket. El estado, el KV y el último MB de output de cada sesión
+quedan en SQLite, así que sobreviven al reinicio del backend — el proceso no,
+porque es hijo suyo, y al arrancar se reconcilian a `exited` conservando el
+historial.
 
 ## Correr
 
@@ -46,6 +49,8 @@ Flags del backend:
 | `-shell` | `$SHELL` | shell a spawnear |
 | `-token` | `$WEBTERM_TOKEN`, o autogenerado | token de acceso |
 | `-no-auth` | `false` | no pedir token aunque escuche en la red |
+| `-db` | `~/.webterm/webterm.db` | base con el estado de las sesiones |
+| `-history-bytes` | `1048576` | cuánto output se guarda por sesión |
 
 ## Acceso desde otra máquina de la red
 
@@ -98,29 +103,82 @@ ssh -N -L 7788:127.0.0.1:7788 giuliano@192.168.0.250
 go test ./...
 ```
 
-Los tests de `internal/server` levantan el servidor, abren una sesión real por
-WebSocket y validan el pipeline completo: eco de un comando, propagación del
-resize al pty (`stty size`) y el aviso de `exit` al browser.
+Sin mocks: el store corre contra SQLite de verdad y el manager contra ptys
+reales. El test que define M2 es `TestSesionSobreviveAlCierreDelSocket`: abre un
+WebSocket, corre un comando, **cierra el socket**, y verifica que la sesión
+sigue viva y que al reattachear llega el replay con lo de antes.
 
 ## Estructura
 
 ```
 cmd/webterm/          entrypoint y flags
-internal/server/      HTTP, static file server, endpoint WebSocket
-internal/terminal/    wrapper del pty (spawn, read/write, resize, close)
+internal/store/       SQLite: sesiones, KV e historial de output
+internal/session/     session manager: ptys vivos, fan-out, reconciliación
+internal/server/      HTTP, static file server, API REST, WebSocket
+internal/terminal/    wrapper del pty (spawn, read/write, resize, wait)
 web/                  frontend Vite + React + xterm.js
 ```
 
-## Protocolo WebSocket (`/ws/terminal`)
+## Estado de las sesiones
 
-Query params opcionales: `cols`, `rows`, `cwd`.
+El pty es hijo del proceso Go: si el backend muere, mueren todas las sesiones.
+Por eso lo que persiste es el *registro* de la sesión, no el proceso. Hay cinco
+mecanismos que mantienen la DB sincronizada con la realidad:
+
+| Caso | Cómo se detecta | `exit_reason` |
+|---|---|---|
+| el shell hace `exit` | `cmd.Wait()` | `normal` |
+| el shell muere pero un nieto retiene el pty | `cmd.Wait()` (el `Read` no da EOF nunca) | `normal` |
+| se reinició el backend | barrido al abrir la base, antes de escuchar | `backend_restart` |
+| deriva entre la DB y las sesiones vivas | sweep cada 30 s | `orphaned` |
+| lo mataste vos | `POST /kill` | `killed` |
+
+Reanudar (`POST /restart`) reusa la misma fila: conserva id, título, cwd, KV e
+historial, y deja un marcador `— sesión reanudada —` en el stream.
+
+## API
+
+| Método | Ruta | Qué hace |
+|---|---|---|
+| `GET` | `/api/sessions` | lista con estado, título y última actividad |
+| `POST` | `/api/sessions` | crea y spawnea: `{title?, description?, cwd?, cols, rows}` |
+| `GET` | `/api/sessions/{id}` | detalle |
+| `PATCH` | `/api/sessions/{id}` | `{title?, description?, work_status?, kanban_status?}` |
+| `POST` | `/api/sessions/{id}/kill` | mata el proceso, **conserva** el historial |
+| `POST` | `/api/sessions/{id}/restart` | pty nuevo sobre la misma sesión |
+| `DELETE` | `/api/sessions/{id}` | borra la sesión, su KV y su historial |
+| `GET` | `/api/sessions/{id}/kv` | contexto persistido de la sesión |
+| `PUT` | `/api/sessions/{id}/kv/{key}` | setea una clave (el body es el valor crudo) |
+| `DELETE` | `/api/sessions/{id}/kv/{key}` | borra una clave |
+
+`kill` y `DELETE` están separados a propósito: matar el proceso no tiene por
+qué llevarse el historial.
+
+El KV ya está expuesto aunque la UI todavía no lo use: es la superficie exacta
+que va a consumir `webterm set/get state` en M5.
+
+## Protocolo WebSocket (`/ws/terminal?session_id=…`)
+
+El `session_id` es obligatorio: las sesiones se crean por la API REST, no por
+el upgrade.
 
 | Sentido | Frame | Contenido |
 |---|---|---|
+| server → browser | texto | `{"type":"attached","session":{…}}` — primer mensaje |
+| server → browser | binario | replay del historial y después output vivo |
+| server → browser | texto | `{"type":"ready"}` — terminó el replay |
+| server → browser | texto | `{"type":"exit","code":N,"reason":"normal"}` |
+| server → browser | texto | `{"type":"error","error":"…"}` |
 | browser → server | binario | input crudo del teclado |
 | browser → server | texto | `{"type":"resize","cols":N,"rows":N}` |
-| server → browser | binario | output crudo del pty (ANSI incluido) |
-| server → browser | texto | `{"type":"exit"}` cuando el proceso termina |
 
 El input viaja como frame binario justamente para que nunca se confunda con un
 mensaje de control.
+
+Attachear a una sesión ya terminada manda el historial y `exit`: la conexión
+queda de solo lectura, que es como la UI muestra lo que pasó en una sesión
+muerta sin necesitar una vista aparte.
+
+Varios clientes pueden estar attacheados a la vez y ven el mismo output; el
+input y el resize son last-writer-wins. Al cliente que deja de leer se lo
+desconecta en vez de frenar el pty.

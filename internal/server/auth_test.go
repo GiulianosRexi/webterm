@@ -15,7 +15,7 @@ const testToken = "token-de-prueba"
 
 func authServer(t *testing.T) *httptest.Server {
 	t.Helper()
-	srv := httptest.NewServer(New(Config{Shell: "/bin/bash", Token: testToken}).Handler())
+	srv := httptest.NewServer(New(Config{Token: testToken}, nil).Handler())
 	t.Cleanup(srv.Close)
 	return srv
 }
@@ -101,7 +101,7 @@ func TestAuthTokenInvalido(t *testing.T) {
 // TestWebSocketRechazaOtroOrigin: aunque el browser mande la cookie, un
 // handshake originado en otra página no debe abrir una shell.
 func TestWebSocketRechazaOtroOrigin(t *testing.T) {
-	srv := httptest.NewServer(New(Config{Shell: "/bin/bash"}).Handler())
+	srv := httptest.NewServer(New(Config{}, nil).Handler())
 	t.Cleanup(srv.Close)
 
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws/terminal"
@@ -186,14 +186,19 @@ func TestLoginFormCorrecto(t *testing.T) {
 		t.Fatal("el login no dejó la cookie")
 	}
 
+	// La cookie tiene que alcanzar para pasar la auth del WebSocket. El
+	// handshake igual falla, pero con 400 (falta session_id, que sale del ABM)
+	// y no con 401: eso es justo lo que distingue "autenticado" de "rechazado".
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws/terminal"
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, http.Header{
+	_, res, err = websocket.DefaultDialer.Dial(wsURL, http.Header{
 		"Cookie": {cookie.Name + "=" + cookie.Value},
 	})
-	if err != nil {
-		t.Fatalf("con la cookie del login el WebSocket debería conectar: %v", err)
+	if err == nil {
+		t.Fatal("sin session_id el handshake no tendría que prosperar")
 	}
-	_ = conn.Close()
+	if res == nil || res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("con la cookie del login se esperaba 400, obtuve %v", res)
+	}
 }
 
 // TestLoginFormIncorrecto: token equivocado vuelve al formulario con el error.

@@ -1,59 +1,42 @@
-// Package server expone la UI estática y el endpoint WebSocket que conecta
-// el browser con un pty del backend.
+// Package server expone la UI estática, la API REST de sesiones y el endpoint
+// WebSocket que attachea el browser a un pty del backend.
 package server
 
 import (
-	"encoding/json"
-	"errors"
-	"io"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
-	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
 
-	"github.com/giuliano/webterm/internal/terminal"
-)
-
-const (
-	// Tamaño del chunk de lectura del pty.
-	readBufSize = 32 * 1024
-	// Cada cuánto mandamos ping para detectar clientes muertos.
-	pingInterval = 30 * time.Second
-	// Cuánto esperamos un pong antes de dar la conexión por perdida.
-	pongTimeout = 60 * time.Second
-	// Timeout de escritura sobre el socket.
-	writeTimeout = 10 * time.Second
+	"github.com/giuliano/webterm/internal/session"
 )
 
 // Config parametriza el servidor.
 type Config struct {
 	Addr      string // dirección de escucha, ej. "127.0.0.1:7788"
 	StaticDir string // carpeta con el build del frontend (web/dist)
-	Shell     string // shell a spawnear; vacío = $SHELL
 	Token     string // token requerido en cada request; vacío = sin auth
 }
 
 // Server sirve la UI y las sesiones de terminal.
 type Server struct {
 	cfg      Config
+	mgr      *session.Manager
 	upgrader websocket.Upgrader
-	nextID   atomic.Uint64
 }
 
-// New construye el servidor.
-func New(cfg Config) *Server {
+// New construye el servidor sobre un manager de sesiones ya arrancado.
+func New(cfg Config, mgr *session.Manager) *Server {
 	return &Server{
 		cfg: cfg,
+		mgr: mgr,
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  4 * 1024,
-			WriteBufferSize: readBufSize,
+			WriteBufferSize: 32 * 1024,
 			CheckOrigin:     sameOrigin,
 		},
 	}
@@ -65,6 +48,18 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/health", s.handleHealth)
 	mux.HandleFunc(loginPath, s.handleLogin)
 	mux.HandleFunc("/api/logout", s.handleLogout)
+
+	mux.HandleFunc("GET /api/sessions", s.handleListSessions)
+	mux.HandleFunc("POST /api/sessions", s.handleCreateSession)
+	mux.HandleFunc("GET /api/sessions/{id}", s.handleGetSession)
+	mux.HandleFunc("PATCH /api/sessions/{id}", s.handlePatchSession)
+	mux.HandleFunc("DELETE /api/sessions/{id}", s.handleDeleteSession)
+	mux.HandleFunc("POST /api/sessions/{id}/kill", s.handleKillSession)
+	mux.HandleFunc("POST /api/sessions/{id}/restart", s.handleRestartSession)
+	mux.HandleFunc("GET /api/sessions/{id}/kv", s.handleListKV)
+	mux.HandleFunc("PUT /api/sessions/{id}/kv/{key}", s.handleSetKV)
+	mux.HandleFunc("DELETE /api/sessions/{id}/kv/{key}", s.handleDeleteKV)
+
 	mux.HandleFunc("/ws/terminal", s.handleTerminal)
 	mux.Handle("/", s.staticHandler())
 	return s.withAuth(mux)
@@ -116,12 +111,15 @@ func (s *Server) logURLs() {
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	auth := "false"
-	if s.cfg.Token != "" {
-		auth = "true"
+	live := 0
+	if s.mgr != nil {
+		live = s.mgr.LiveCount()
 	}
-	_, _ = io.WriteString(w, `{"status":"ok","auth":`+auth+`}`)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":   "ok",
+		"auth":     s.cfg.Token != "",
+		"sessions": live,
+	})
 }
 
 // staticHandler sirve el build de Vite, con fallback a index.html para que
@@ -143,147 +141,4 @@ func (s *Server) staticHandler() http.Handler {
 		}
 		files.ServeHTTP(w, r)
 	})
-}
-
-// clientMsg es un mensaje de control del browser (los de texto; el input
-// crudo del usuario viaja como mensaje binario).
-type clientMsg struct {
-	Type string `json:"type"`
-	Rows uint16 `json:"rows"`
-	Cols uint16 `json:"cols"`
-}
-
-// handleTerminal hace el upgrade a WebSocket y le conecta un pty nuevo.
-func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
-	conn, err := s.upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		log.Printf("upgrade falló: %v", err)
-		return
-	}
-
-	rows := uint16(queryInt(r, "rows", 24))
-	cols := uint16(queryInt(r, "cols", 80))
-
-	id := "s" + strconv.FormatUint(s.nextID.Add(1), 10)
-	sess, err := terminal.New(id, terminal.Config{
-		Shell: s.cfg.Shell,
-		Cwd:   r.URL.Query().Get("cwd"),
-		Rows:  rows,
-		Cols:  cols,
-	})
-	if err != nil {
-		log.Printf("[%s] no se pudo spawnear el pty: %v", id, err)
-		_ = conn.WriteControl(websocket.CloseMessage,
-			websocket.FormatCloseMessage(websocket.CloseInternalServerErr, err.Error()),
-			time.Now().Add(writeTimeout))
-		_ = conn.Close()
-		return
-	}
-	log.Printf("[%s] sesión abierta (%dx%d)", id, cols, rows)
-
-	c := &wsClient{conn: conn}
-	done := make(chan struct{})
-
-	// pty -> browser
-	go func() {
-		defer close(done)
-		buf := make([]byte, readBufSize)
-		for {
-			n, err := sess.Read(buf)
-			if n > 0 {
-				if werr := c.write(websocket.BinaryMessage, buf[:n]); werr != nil {
-					return
-				}
-			}
-			if err != nil {
-				// El shell terminó (EOF del pty) o se cerró la sesión.
-				_ = c.writeJSON(map[string]string{"type": "exit"})
-				return
-			}
-		}
-	}()
-
-	go c.keepalive(done)
-
-	// browser -> pty
-	conn.SetReadDeadline(time.Now().Add(pongTimeout))
-	conn.SetPongHandler(func(string) error {
-		return conn.SetReadDeadline(time.Now().Add(pongTimeout))
-	})
-
-	for {
-		typ, data, err := conn.ReadMessage()
-		if err != nil {
-			break
-		}
-		switch typ {
-		case websocket.BinaryMessage, websocket.TextMessage:
-			if typ == websocket.TextMessage && len(data) > 0 && data[0] == '{' {
-				var msg clientMsg
-				if err := json.Unmarshal(data, &msg); err == nil && msg.Type == "resize" {
-					if err := sess.Resize(msg.Rows, msg.Cols); err != nil && !errors.Is(err, io.ErrClosedPipe) {
-						log.Printf("[%s] resize falló: %v", id, err)
-					}
-					continue
-				}
-			}
-			if _, err := sess.Write(data); err != nil {
-				log.Printf("[%s] write al pty falló: %v", id, err)
-			}
-		}
-	}
-
-	_ = sess.Close()
-	<-done
-	_ = conn.Close()
-	log.Printf("[%s] sesión cerrada", id)
-}
-
-// wsClient serializa las escrituras al socket: gorilla no admite writers
-// concurrentes y acá escriben el lector del pty y el keepalive.
-type wsClient struct {
-	mu   sync.Mutex
-	conn *websocket.Conn
-}
-
-func (c *wsClient) write(msgType int, data []byte) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	_ = c.conn.SetWriteDeadline(time.Now().Add(writeTimeout))
-	return c.conn.WriteMessage(msgType, data)
-}
-
-func (c *wsClient) writeJSON(v any) error {
-	data, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-	return c.write(websocket.TextMessage, data)
-}
-
-func (c *wsClient) keepalive(done <-chan struct{}) {
-	ticker := time.NewTicker(pingInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-done:
-			return
-		case <-ticker.C:
-			c.mu.Lock()
-			_ = c.conn.SetWriteDeadline(time.Now().Add(writeTimeout))
-			err := c.conn.WriteMessage(websocket.PingMessage, nil)
-			c.mu.Unlock()
-			if err != nil {
-				return
-			}
-		}
-	}
-}
-
-func queryInt(r *http.Request, key string, def int) int {
-	v, err := strconv.Atoi(r.URL.Query().Get(key))
-	if err != nil || v <= 0 {
-		return def
-	}
-	return v
 }

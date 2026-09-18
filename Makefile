@@ -2,7 +2,7 @@ SHELL := /bin/bash
 PORT ?= 7788
 ADDR ?= 127.0.0.1:$(PORT)
 
-.PHONY: run run-lan build build-web dev clean
+.PHONY: run run-lan build build-web dev test clean
 
 ## run: buildea el frontend y levanta el backend sirviendo web/dist
 run: build-web
@@ -29,6 +29,10 @@ dev: web/node_modules
 	go run ./cmd/webterm -addr $(ADDR) & \
 	npm --prefix web run dev; \
 	kill %1
+
+## test: tests del backend con el detector de carreras
+test:
+	go test ./... -race
 
 clean:
 	rm -rf bin web/dist

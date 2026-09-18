@@ -1,11 +1,11 @@
 // Package terminal envuelve un proceso corriendo bajo un pseudo-terminal.
 //
-// En M1 la sesión vive mientras dure la conexión WebSocket. La API está
-// pensada para que en M2 el session manager pueda quedarse dueño de la
-// Session sin que cambie nada de acá.
+// La Session no sabe nada de WebSockets ni de persistencia: su dueño es el
+// session manager, que la mantiene viva entre conexiones.
 package terminal
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -32,9 +32,14 @@ type Session struct {
 	ID  string
 	cmd *exec.Cmd
 
-	mu   sync.Mutex
-	ptmx *os.File
-	done bool
+	mu     sync.Mutex
+	ptmx   *os.File
+	closed bool
+
+	// done se cierra cuando el proceso terminó; exitCode es válido a partir
+	// de ahí (el cierre del canal ordena la escritura contra las lecturas).
+	done     chan struct{}
+	exitCode int
 }
 
 // New spawnea el shell bajo un pty nuevo.
@@ -75,8 +80,36 @@ func New(id string, cfg Config) (*Session, error) {
 		return nil, fmt.Errorf("arrancando pty: %w", err)
 	}
 
-	return &Session{ID: id, cmd: cmd, ptmx: ptmx}, nil
+	s := &Session{ID: id, cmd: cmd, ptmx: ptmx, done: make(chan struct{})}
+	go s.reap()
+	return s, nil
 }
+
+// reap espera a que el proceso termine y cierra el pty.
+//
+// La señal autoritativa de muerte es cmd.Wait(), no el EOF del Read: si el
+// shell muere pero un nieto heredó el esclavo del pty, el Read no da EOF
+// nunca y la sesión quedaría marcada como viva para siempre. Cerrar el ptmx
+// acá es además lo que destraba a un lector bloqueado.
+func (s *Session) reap() {
+	err := s.cmd.Wait()
+	s.exitCode = exitCodeOf(err)
+
+	s.mu.Lock()
+	s.closed = true
+	ptmx := s.ptmx
+	s.mu.Unlock()
+
+	_ = ptmx.Close()
+	close(s.done)
+}
+
+// Done se cierra cuando el proceso terminó.
+func (s *Session) Done() <-chan struct{} { return s.done }
+
+// ExitCode devuelve el código de salida. Solo es válido después de que Done
+// se haya cerrado; antes devuelve 0.
+func (s *Session) ExitCode() int { return s.exitCode }
 
 // Read devuelve output crudo del pty (secuencias ANSI incluidas).
 func (s *Session) Read(p []byte) (int, error) { return s.ptmx.Read(p) }
@@ -85,7 +118,7 @@ func (s *Session) Read(p []byte) (int, error) { return s.ptmx.Read(p) }
 func (s *Session) Write(p []byte) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.done {
+	if s.closed {
 		return 0, io.ErrClosedPipe
 	}
 	return s.ptmx.Write(p)
@@ -95,27 +128,47 @@ func (s *Session) Write(p []byte) (int, error) {
 func (s *Session) Resize(rows, cols uint16) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.done {
+	if s.closed {
 		return io.ErrClosedPipe
 	}
 	return pty.Setsize(s.ptmx, &pty.Winsize{Rows: rows, Cols: cols})
 }
 
-// Close mata el proceso y cierra el pty. Es idempotente.
-func (s *Session) Close() error {
-	s.mu.Lock()
-	if s.done {
-		s.mu.Unlock()
+// Kill le manda SIGKILL al proceso y vuelve enseguida. Es idempotente: el
+// cierre real lo hace reap(). Para esperar a que termine, usar Close.
+func (s *Session) Kill() error {
+	select {
+	case <-s.done:
+		return nil
+	default:
+	}
+	if s.cmd.Process == nil {
 		return nil
 	}
-	s.done = true
-	ptmx := s.ptmx
-	s.mu.Unlock()
-
-	err := ptmx.Close()
-	if s.cmd.Process != nil {
-		_ = s.cmd.Process.Kill()
+	if err := s.cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		return err
 	}
-	_ = s.cmd.Wait()
-	return err
+	return nil
+}
+
+// Close mata el proceso y espera a que reap() termine de limpiar. Es idempotente.
+func (s *Session) Close() error {
+	if err := s.Kill(); err != nil {
+		return err
+	}
+	<-s.done
+	return nil
+}
+
+// exitCodeOf traduce el error de cmd.Wait a un código. -1 es "murió por una
+// señal", que es lo que vemos cuando nosotros mismos lo matamos.
+func exitCodeOf(err error) int {
+	if err == nil {
+		return 0
+	}
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return ee.ExitCode()
+	}
+	return -1
 }

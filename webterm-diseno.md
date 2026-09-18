@@ -93,6 +93,10 @@ No hace falta mantener un emulador de terminal corriendo en el servidor.
   - Matar sesión.
 - Cerrar la pestaña del browser ya no mata el proceso.
 
+**Hecho.** El diseño detallado —esquema SQLite, cap del historial y los cuatro
+mecanismos de reconciliación— está en
+`docs/superpowers/specs/2026-09-17-m2-persistencia-sesiones-design.md`.
+
 ### M3 — UI multi-terminal
 
 - Tabs (u otro mecanismo) en el frontend para tener varias sesiones visibles
