@@ -7,12 +7,13 @@ una UI web. Backend en Go (pty real vía `creack/pty`), frontend React plano con
 El diseño completo y el roadmap por milestones están en
 [`webterm-diseno.md`](./webterm-diseno.md).
 
-## Estado: M8
+## Estado: M9
 
 - [x] **M1** — terminal web básica: un pty por conexión WebSocket, input/output,
       resize, true color, mouse.
 - [x] **M2** — persistencia de sesiones (SQLite + session manager) y ABM.
 - [x] **M8** — recursos externos linkeados a una sesión (PRs de GitHub).
+- [x] **M9** — servidor MCP para que Claude escriba en su sesión.
 - [ ] **M3** — UI multi-terminal (tabs). ← próximo
 - [ ] **M4** — folders.
 - [ ] **M5** — CLI local `webterm`.
@@ -54,6 +55,7 @@ Flags del backend:
 | `-no-auth` | `false` | no pedir token aunque escuche en la red |
 | `-db` | `~/.webterm/webterm.db` | base con el estado de las sesiones |
 | `-history-bytes` | `1048576` | cuánto output se guarda por sesión |
+| `-mcp-config` | — | imprime cómo registrar el servidor MCP y sale |
 
 ## Acceso desde otra máquina de la red
 
@@ -117,6 +119,7 @@ sigue viva y que al reattachear llega el replay con lo de antes.
 cmd/webterm/          entrypoint y flags
 internal/store/       SQLite: sesiones, KV, historial de output y recursos
 internal/resources/   providers de sistemas externos (GitHub), caché con TTL
+internal/mcp/         servidor MCP: las tools sobre el session manager
 internal/session/     session manager: ptys vivos, fan-out, reconciliación
 internal/server/      HTTP, static file server, API REST, WebSocket
 internal/terminal/    wrapper del pty (spawn, read/write, resize, wait)
@@ -184,6 +187,43 @@ un minuto se muestran con su edad.
 
 Sumar otro sistema —Linear, Slack— es sumar un provider en
 `internal/resources`, sin tocar el modelo de datos ni el contrato de la API.
+
+## Servidor MCP
+
+El backend expone un servidor MCP en `/mcp` para que Claude, corriendo **dentro**
+de una sesión, le escriba contexto a esa sesión y le linkee PRs sin salir de la
+terminal. Se registra una sola vez:
+
+```bash
+webterm -mcp-config          # imprime el comando con tu host, puerto y token
+```
+
+```bash
+claude mcp add --transport http webterm http://127.0.0.1:7788/mcp \
+  -H 'X-Webterm-Session: ${WEBTERM_SESSION_ID}' \
+  -H 'Authorization: Bearer ${WEBTERM_TOKEN}'
+```
+
+**Las comillas simples importan.** Claude Code expande esas variables en *cada
+request*, contra el entorno del proceso que hace la llamada; si las expandiera
+el shell al registrar, quedarían congeladas y todas las sesiones escribirían
+sobre la que registró el MCP. Las dos variables las inyecta el backend al pty,
+así que dentro de una sesión ya están.
+
+Tools disponibles:
+
+| Tool | Qué hace |
+|---|---|
+| `set_context` / `get_context` | el contexto persistido de la sesión (el KV) |
+| `set_title` | nombra la sesión: es lo que se ve en la lista |
+| `link_pr` | linkea un PR de GitHub |
+| `list_links` | los recursos linkeados, con su estado |
+
+Ninguna borra nada: deslinkear y borrar sesiones siguen siendo decisiones
+humanas, y la UI ya las tiene.
+
+Si Claude corre fuera de una sesión de WebTerm la variable no existe y las tools
+lo dicen explícitamente, en vez de fallar con un id que no se entiende.
 
 ## Protocolo WebSocket (`/ws/terminal?session_id=…`)
 

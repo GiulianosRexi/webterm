@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	webmcp "github.com/giuliano/webterm/internal/mcp"
 	"github.com/giuliano/webterm/internal/resources"
 	"github.com/giuliano/webterm/internal/session"
 	"github.com/giuliano/webterm/internal/store"
@@ -34,7 +35,7 @@ func newTestServer(t *testing.T) (*httptest.Server, *session.Manager) {
 	}
 	t.Cleanup(func() { _ = mgr.Close() })
 
-	srv := httptest.NewServer(New(Config{}, mgr).Handler())
+	srv := httptest.NewServer(New(Config{MCP: webmcp.New(mgr).Handler()}, mgr).Handler())
 	t.Cleanup(srv.Close)
 	return srv, mgr
 }

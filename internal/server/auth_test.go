@@ -246,3 +246,40 @@ func TestLogout(t *testing.T) {
 		}
 	}
 }
+
+// TestBearerToken: un cliente de API no manda cookies ni ?token=. El servidor
+// MCP depende de que Bearer alcance.
+func TestBearerToken(t *testing.T) {
+	srv := httptest.NewServer(New(Config{Token: testToken}, nil).Handler())
+	t.Cleanup(srv.Close)
+
+	casos := []struct {
+		nombre string
+		header string
+		quiero int
+	}{
+		{"correcto", "Bearer " + testToken, http.StatusOK},
+		{"minúsculas", "bearer " + testToken, http.StatusOK},
+		{"token equivocado", "Bearer otra-cosa", http.StatusUnauthorized},
+		{"sin prefijo", testToken, http.StatusUnauthorized},
+		{"prefijo solo", "Bearer ", http.StatusUnauthorized},
+		{"vacío", "", http.StatusUnauthorized},
+	}
+	for _, c := range casos {
+		req, err := http.NewRequest("GET", srv.URL+"/api/health", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.header != "" {
+			req.Header.Set("Authorization", c.header)
+		}
+		res, err := srv.Client().Do(req)
+		if err != nil {
+			t.Fatalf("%s: %v", c.nombre, err)
+		}
+		res.Body.Close()
+		if res.StatusCode != c.quiero {
+			t.Errorf("%s: status %d, se esperaba %d", c.nombre, res.StatusCode, c.quiero)
+		}
+	}
+}
