@@ -34,6 +34,13 @@ cada sesión quedan en SQLite, así que sobreviven también a un reinicio del
 daemon — el proceso no, y al arrancar se reconcilian a `exited` conservando el
 historial.
 
+Hay un reinicio destructivo que esta feature no evita: **la primera vez que
+se levanta el binario nuevo**, no hay daemon previo sosteniendo nada, así que
+las sesiones que estaban vivas en el proceso viejo (de antes de M10, con el
+pty en el mismo proceso que la UI) se pierden en ese arranque puntual —
+quedan marcadas `daemon_restart`, con el historial intacto. De ahí en
+adelante cada recompilación reusa el mismo daemon y no toca una sola sesión.
+
 ## Correr
 
 Requiere Go ≥ 1.25 y Node ≥ 20.
@@ -57,7 +64,7 @@ Flags del backend:
 | `-addr` | `127.0.0.1:7788` | dirección de escucha |
 | `-static` | `web/dist` | carpeta con el build del frontend |
 | `-shell` | `$SHELL` | shell a spawnear |
-| `-token` | `$WEBTERM_TOKEN`, o autogenerado | token de acceso |
+| `-token` | `$WEBTERM_TOKEN`, o el persistido en disco (se genera una vez) | token de acceso |
 | `-no-auth` | `false` | no pedir token aunque escuche en la red |
 | `-db` | `~/.webterm/webterm.db` | base con el estado de las sesiones |
 | `-history-bytes` | `1048576` | cuánto output se guarda por sesión |
@@ -71,7 +78,32 @@ fijas a propósito: si lo fueran, levantar una instancia de desarrollo con otro
 sesiones ajenas — peor que el problema que esta feature vino a resolver. La
 derivación está en `internal/daemon/paths.go`.
 
-<!-- PENDIENTE M10: flags y subcomandos del daemon, cuando la tarea 11 fije la superficie -->
+El token de acceso también pasó a persistirse en disco, al lado de la base
+(`~/.webterm/webterm.token` para el `-db` default). Antes se regeneraba en
+cada arranque; con sesiones que sobreviven al reinicio del orquestador, un
+token nuevo invalidaría el `WEBTERM_TOKEN` que ya está inyectado en los ptys
+vivos y le rompería el servidor MCP justo adentro de las sesiones que este
+milestone existe para salvar. El env var y el flag `-token` siguen ganando
+si los pasás; el archivo es solo el fallback autogenerado.
+
+Subcomandos de `webterm daemon` (mismo binario, aceptan los mismos `-db` y
+`-history-bytes` que el orquestador, con los mismos defaults, porque los
+necesitan para derivar las rutas y, en `restart`, para relanzarse con los
+mismos parámetros):
+
+| Subcomando | Qué hace |
+|---|---|
+| `webterm daemon` | corre el daemon en foreground; en uso normal lo levanta solo el orquestador on-demand, no hace falta correrlo a mano |
+| `webterm daemon status` | pid, versión de protocolo y cantidad de sesiones vivas; avisa si el binario actual habla un protocolo distinto al que está corriendo |
+| `webterm daemon stop` | le manda SIGTERM y espera a que suelte el socket — **mata las sesiones vivas** |
+| `webterm daemon restart` | `stop` seguido de un arranque nuevo — **mata las sesiones vivas** |
+| `webterm daemon logs` | vuelca el contenido de `webterm.log` |
+
+Atajos en el Makefile: `make daemon-status`, `make daemon-restart`,
+`make daemon-stop`. `restart` y `stop` matan sesiones a propósito: son el
+único caso que esta feature no cubre, y por eso el Makefile lo dice en la
+misma línea del target (`## MATA LAS SESIONES VIVAS`) en vez de dejarlo
+como letra chica.
 
 ## Acceso desde otra máquina de la red
 
@@ -149,7 +181,21 @@ es la implementación que lo habla de verdad, así que el orquestador no
 distingue si del otro lado hay un daemon en otro proceso o —como en los
 tests— un `internal/session.Manager` embebido en el mismo.
 
-<!-- PENDIENTE M10: flags y subcomandos del daemon, cuando la tarea 11 fije la superficie -->
+El orquestador levanta el daemon on-demand (`ensureDaemon`, en
+`cmd/webterm/main.go`): si el socket ya contesta lo reusa tal cual, si no lo
+spawnea desatado del propio proceso (`Setsid`, para que un Ctrl-C a la
+terminal del orquestador no se lleve puesto también al daemon —
+exactamente lo que esta partición existe para evitar) y espera a que
+responda. Mientras vive, el daemon sostiene un flock exclusivo sobre
+`webterm.lock`, así que dos procesos nunca terminan sirviendo la misma base.
+
+Los dos hablan un protocolo versionado (`daemon.ProtocolVersion`, hoy `1`):
+si recompilaste el binario y el daemon que sigue corriendo es de una versión
+vieja, el orquestador no lo reinicia solo — corta con un mensaje pidiendo
+`webterm daemon restart` a mano, porque eso mata sesiones y tiene que ser
+una decisión explícita, nunca algo que pase de rebote al levantar el
+orquestador. Los subcomandos de `webterm daemon` (`status`, `stop`,
+`restart`, `logs`) están en "Correr", más arriba.
 
 El invariante que sostiene la partición: **agregar una feature al orquestador
 no tiene que requerir tocar el daemon**. Por eso el daemon no sabe qué es un
@@ -159,9 +205,12 @@ separación que `dockerd`/`containerd`, por el mismo motivo: que la capa que
 cambia seguido no sostenga los procesos que tienen que durar.
 
 La contraparte de esa libertad: **reiniciar el daemon sí mata todas las
-sesiones vivas**, porque el pty es hijo suyo. Es un acto explícito y ruidoso,
-no algo que pase de rebote reiniciando el orquestador — que es justamente lo
-que esta partición vino a comprar.
+sesiones vivas**, porque el pty es hijo suyo. `webterm daemon stop` y
+`webterm daemon restart` hacen exactamente eso — es el único caso que esta
+feature no cubre, y por diseño es un acto explícito y ruidoso (subcomando
+aparte, con su propio target de Makefile), no algo que pase de rebote
+reiniciando el orquestador — que es justamente lo que esta partición vino a
+comprar.
 
 ## Estructura
 
