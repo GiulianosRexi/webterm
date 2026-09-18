@@ -4,7 +4,7 @@ import "testing"
 
 func TestPathsFor(t *testing.T) {
 	casos := []struct {
-		db                     string
+		db                    string
 		socket, lock, logPath string
 	}{
 		{
