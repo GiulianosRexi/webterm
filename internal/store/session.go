@@ -14,8 +14,12 @@ import (
 type PtyStatus string
 
 const (
-	StatusRunning PtyStatus = "running"
-	StatusExited  PtyStatus = "exited"
+	// StatusStarting es la ventana entre que el orquestador inserta la fila y
+	// el daemon confirma el spawn. No necesita migración: pty_status es un
+	// TEXT sin CHECK.
+	StatusStarting PtyStatus = "starting"
+	StatusRunning  PtyStatus = "running"
+	StatusExited   PtyStatus = "exited"
 )
 
 // ExitReason explica por qué murió una sesión. Importa distinguirlas: un
@@ -24,11 +28,14 @@ const (
 type ExitReason string
 
 const (
-	ReasonNormal         ExitReason = "normal"
-	ReasonKilled         ExitReason = "killed"
-	ReasonBackendRestart ExitReason = "backend_restart"
-	ReasonOrphaned       ExitReason = "orphaned"
-	ReasonSpawnFailed    ExitReason = "spawn_failed"
+	ReasonNormal ExitReason = "normal"
+	ReasonKilled ExitReason = "killed"
+	// ReasonDaemonRestart es lo que le pasó a las sesiones cuando el daemon
+	// arrancó de nuevo. Antes se llamaba backend_restart, cuando backend y
+	// daemon eran el mismo proceso.
+	ReasonDaemonRestart ExitReason = "daemon_restart"
+	ReasonOrphaned      ExitReason = "orphaned"
+	ReasonSpawnFailed   ExitReason = "spawn_failed"
 )
 
 // Session es la fila de una sesión. work_status, kanban_status y folder_id se
@@ -246,12 +253,17 @@ func (s *Store) DeleteSession(id string) error {
 	return s.execAffecting(`DELETE FROM sessions WHERE id = ?`, id)
 }
 
-// RunningIDs devuelve los ids que la DB cree vivos. El manager lo usa para
-// detectar filas que quedaron desincronizadas de su mapa de sesiones vivas.
-func (s *Store) RunningIDs() ([]string, error) {
-	rows, err := s.db.Query(`SELECT id FROM sessions WHERE pty_status = ?`, StatusRunning)
+// ActiveIDs devuelve los ids que la DB cree con proceso detrás: los que están
+// corriendo y los que están arrancando. El sweep del orquestador los contrasta
+// contra lo que el daemon dice tener vivo.
+//
+// Incluir starting no es cosmético: una fila que quedó ahí porque el
+// orquestador crasheó entre el insert y el spawn no la levantaría nadie más.
+func (s *Store) ActiveIDs() ([]string, error) {
+	rows, err := s.db.Query(`SELECT id FROM sessions WHERE pty_status IN (?, ?)`,
+		StatusRunning, StatusStarting)
 	if err != nil {
-		return nil, fmt.Errorf("listando sesiones vivas: %w", err)
+		return nil, fmt.Errorf("listando sesiones activas: %w", err)
 	}
 	defer rows.Close()
 
@@ -266,23 +278,18 @@ func (s *Store) RunningIDs() ([]string, error) {
 	return ids, rows.Err()
 }
 
-// ReconcileBoot marca como muertas todas las sesiones que la DB dejó vivas en
-// la ejecución anterior. El pty es hijo del backend: si el backend arrancó de
-// nuevo, ninguna sobrevivió. Devuelve cuántas filas corrigió.
-func (s *Store) ReconcileBoot() (int, error) {
+// MarkStarting deja la fila lista para que el daemon la spawnee, borrando los
+// rastros de la salida anterior para que la UI no muestre un exit code al lado
+// de una sesión que está arrancando.
+func (s *Store) MarkStarting(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	now := time.Now().UnixMilli()
-	res, err := s.db.Exec(`
+	return s.execAffecting(`
 		UPDATE sessions
-		SET pty_status = ?, exit_reason = ?, exited_at = ?
-		WHERE pty_status = ?`,
-		StatusExited, string(ReasonBackendRestart), now, StatusRunning)
-	if err != nil {
-		return 0, fmt.Errorf("reconciliando el arranque: %w", err)
-	}
-	n, err := res.RowsAffected()
-	return int(n), err
+		SET pty_status = ?, exit_reason = NULL, exit_code = NULL, exited_at = NULL,
+		    last_active_at = ?
+		WHERE id = ?`,
+		StatusStarting, time.Now().UnixMilli(), id)
 }
 
 // execAffecting corre un statement que tiene que tocar exactamente una fila y

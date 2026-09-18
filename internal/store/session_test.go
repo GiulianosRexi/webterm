@@ -2,6 +2,8 @@ package store
 
 import (
 	"errors"
+	"reflect"
+	"sort"
 	"testing"
 )
 
@@ -143,46 +145,76 @@ func TestDeleteSession(t *testing.T) {
 	}
 }
 
-// TestReconcileBoot cubre el caso central de M2: el pty es hijo del backend,
-// así que toda sesión que la DB diga "running" al arrancar es mentira.
-func TestReconcileBoot(t *testing.T) {
+func TestActiveIDsIncluyeStartingYRunning(t *testing.T) {
 	st := newTestStore(t)
-	_ = st.CreateSession(sampleSession("viva"))
-	_ = st.CreateSession(sampleSession("muerta"))
-	code := 0
-	_ = st.MarkExited("muerta", ReasonNormal, &code)
 
-	n, err := st.ReconcileBoot()
+	corriendo := &Session{ID: "a", Cwd: "/tmp", Shell: "/bin/sh", Cols: 80, Rows: 24, PtyStatus: StatusRunning}
+	arrancando := &Session{ID: "b", Cwd: "/tmp", Shell: "/bin/sh", Cols: 80, Rows: 24, PtyStatus: StatusStarting}
+	muerta := &Session{ID: "c", Cwd: "/tmp", Shell: "/bin/sh", Cols: 80, Rows: 24, PtyStatus: StatusExited}
+	for _, s := range []*Session{corriendo, arrancando, muerta} {
+		if err := st.CreateSession(s); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ids, err := st.ActiveIDs()
 	if err != nil {
-		t.Fatalf("ReconcileBoot: %v", err)
+		t.Fatal(err)
 	}
-	if n != 1 {
-		t.Fatalf("se reconciliaron %d sesiones, se esperaba 1", n)
-	}
-
-	got, _ := st.GetSession("viva")
-	if got.PtyStatus != StatusExited || got.ExitReason != string(ReasonBackendRestart) {
-		t.Fatalf("no se reconcilió: %+v", got)
-	}
-	// La que ya estaba muerta no se toca: conserva su razón real.
-	otra, _ := st.GetSession("muerta")
-	if otra.ExitReason != string(ReasonNormal) {
-		t.Fatalf("se pisó una sesión ya muerta: %+v", otra)
+	sort.Strings(ids)
+	if !reflect.DeepEqual(ids, []string{"a", "b"}) {
+		t.Fatalf("ActiveIDs = %v; quería [a b]", ids)
 	}
 }
 
-func TestRunningIDs(t *testing.T) {
+// Una fila que quedó en starting porque el orquestador crasheó entre el
+// insert y el spawn tiene que poder marcarse muerta como cualquier otra.
+func TestMarkExitedSobreStarting(t *testing.T) {
 	st := newTestStore(t)
-	_ = st.CreateSession(sampleSession("a"))
-	_ = st.CreateSession(sampleSession("b"))
-	_ = st.MarkExited("b", ReasonKilled, nil)
-
-	ids, err := st.RunningIDs()
-	if err != nil {
-		t.Fatalf("RunningIDs: %v", err)
+	sess := &Session{ID: "x", Cwd: "/tmp", Shell: "/bin/sh", Cols: 80, Rows: 24, PtyStatus: StatusStarting}
+	if err := st.CreateSession(sess); err != nil {
+		t.Fatal(err)
 	}
-	if len(ids) != 1 || ids[0] != "a" {
-		t.Fatalf("RunningIDs = %v", ids)
+
+	if err := st.MarkExited("x", ReasonOrphaned, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := st.GetSession("x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PtyStatus != StatusExited || got.ExitReason != string(ReasonOrphaned) {
+		t.Fatalf("quedó %s/%s; quería exited/orphaned", got.PtyStatus, got.ExitReason)
+	}
+}
+
+func TestMarkStarting(t *testing.T) {
+	st := newTestStore(t)
+	sess := &Session{ID: "x", Cwd: "/tmp", Shell: "/bin/sh", Cols: 80, Rows: 24, PtyStatus: StatusExited}
+	sess.ExitReason = string(ReasonNormal)
+	if err := st.CreateSession(sess); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := st.MarkStarting("x"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := st.GetSession("x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PtyStatus != StatusStarting {
+		t.Fatalf("pty_status = %s; quería starting", got.PtyStatus)
+	}
+	// Los rastros de la salida anterior se borran: si no, la UI muestra un
+	// exit code al lado de una sesión que está arrancando.
+	if got.ExitReason != "" || got.ExitCode != nil || got.ExitedAt != nil {
+		t.Fatalf("quedaron rastros de la salida anterior: %+v", got)
+	}
+	if err := st.MarkStarting("no-existe"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("MarkStarting sobre una sesión inexistente dio %v; quería ErrNotFound", err)
 	}
 }
 
