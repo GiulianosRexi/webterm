@@ -182,8 +182,8 @@ Notas:
 
 ### M8 — Recursos externos linkeados a una sesión
 
-**Próximo a implementar** (antes que M3: los números son ids estables, no
-orden de ejecución).
+**Hecho.** El diseño detallado está en
+`docs/superpowers/specs/2026-09-18-m8-recursos-linkeados-design.md`.
 
 Poder colgarle a una sesión los recursos externos con los que se relaciona, y
 ver su estado sin salir de WebTerm. Se arranca solo con PRs de GitHub, pero el
