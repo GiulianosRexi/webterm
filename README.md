@@ -7,13 +7,14 @@ una UI web. Backend en Go (pty real vía `creack/pty`), frontend React plano con
 El diseño completo y el roadmap por milestones están en
 [`webterm-diseno.md`](./webterm-diseno.md).
 
-## Estado: M9
+## Estado: M10
 
 - [x] **M1** — terminal web básica: un pty por conexión WebSocket, input/output,
       resize, true color, mouse.
 - [x] **M2** — persistencia de sesiones (SQLite + session manager) y ABM.
 - [x] **M8** — recursos externos linkeados a una sesión (PRs de GitHub).
 - [x] **M9** — servidor MCP para que Claude escriba en su sesión.
+- [x] **M10** — daemon de sesiones.
 - [ ] **M3** — UI multi-terminal (tabs). ← próximo
 - [ ] **M4** — folders.
 - [ ] **M5** — CLI local `webterm`.
@@ -22,10 +23,15 @@ El diseño completo y el roadmap por milestones están en
 
 Los números son ids estables, no orden de ejecución: M8 va antes que M3.
 
-Desde M2 el pty vive en el backend, no en la conexión: cerrar la pestaña solo
-cierra el socket. El estado, el KV y el último MB de output de cada sesión
-quedan en SQLite, así que sobreviven al reinicio del backend — el proceso no,
-porque es hijo suyo, y al arrancar se reconcilian a `exited` conservando el
+Desde M2 el pty no vive en la conexión: cerrar la pestaña solo cierra el
+socket, no el proceso. Desde M10 el pty tampoco vive en el mismo proceso que
+sirve la UI: es hijo del **daemon**, un segundo proceso aparte del
+**orquestador** (todo lo demás — HTTP, API, MCP, recursos, KV). Reiniciar el
+orquestador, que es lo que se hace todo el rato mientras se desarrolla sobre
+WebTerm, ya no mata nada. El detalle de esa partición está en "Arquitectura:
+daemon y orquestador" más abajo. El estado, el KV y el último MB de output de
+cada sesión quedan en SQLite, así que sobreviven también a un reinicio del
+daemon — el proceso no, y al arrancar se reconcilian a `exited` conservando el
 historial.
 
 ## Correr
@@ -56,6 +62,16 @@ Flags del backend:
 | `-db` | `~/.webterm/webterm.db` | base con el estado de las sesiones |
 | `-history-bytes` | `1048576` | cuánto output se guarda por sesión |
 | `-mcp-config` | — | imprime cómo registrar el servidor MCP y sale |
+
+El socket, el lock y el log del daemon no son flags propios: se derivan del
+path de `-db` (`~/.webterm/webterm.db` da `webterm.sock`, `webterm.lock` y
+`webterm.log` al lado; `~/.webterm/dev.db` da su propio trío). No son rutas
+fijas a propósito: si lo fueran, levantar una instancia de desarrollo con otro
+`-db` conectaría igual al daemon de producción y le spawnearía y mataría
+sesiones ajenas — peor que el problema que esta feature vino a resolver. La
+derivación está en `internal/daemon/paths.go`.
+
+<!-- PENDIENTE M10: flags y subcomandos del daemon, cuando la tarea 11 fije la superficie -->
 
 ## Acceso desde otra máquina de la red
 
@@ -113,31 +129,79 @@ reales. El test que define M2 es `TestSesionSobreviveAlCierreDelSocket`: abre un
 WebSocket, corre un comando, **cierra el socket**, y verifica que la sesión
 sigue viva y que al reattachear llega el replay con lo de antes.
 
+## Arquitectura: daemon y orquestador
+
+Desde M10 esto no es un solo proceso. El backend se partió en dos:
+
+- el **daemon** es dueño de los ptys y del historial de output, y nada más.
+  Es lo que hoy vive en `internal/daemon`, corriendo por encima de
+  `internal/session` (spawn, pump, reap, hub, ring, writer), que no cambió de
+  lógica, solo de proceso.
+- el **orquestador** es todo lo demás: HTTP, la UI estática, la API REST, el
+  servidor MCP, los recursos externos, el KV. Su manager,
+  `internal/control`, resuelve contra la base directamente todo lo que no es
+  un pty (`List`, `Get`, `UpdateMeta`, KV, recursos) y le delega al daemon
+  solo `Create`, `Attach`, `Kill` y `Restart`.
+
+Los dos hablan por un socket Unix: `internal/ptyapi` define el contrato
+(cuatro métodos: `Spawn`, `Attach`, `Kill`, `LiveIDs`) y `internal/daemonclient`
+es la implementación que lo habla de verdad, así que el orquestador no
+distingue si del otro lado hay un daemon en otro proceso o —como en los
+tests— un `internal/session.Manager` embebido en el mismo.
+
+<!-- PENDIENTE M10: flags y subcomandos del daemon, cuando la tarea 11 fije la superficie -->
+
+El invariante que sostiene la partición: **agregar una feature al orquestador
+no tiene que requerir tocar el daemon**. Por eso el daemon no sabe qué es un
+título, un token o un PR de GitHub — sumar cualquiera de esas cosas es tocar
+`internal/control` y `internal/store`, nunca `internal/daemon`. Es la misma
+separación que `dockerd`/`containerd`, por el mismo motivo: que la capa que
+cambia seguido no sostenga los procesos que tienen que durar.
+
+La contraparte de esa libertad: **reiniciar el daemon sí mata todas las
+sesiones vivas**, porque el pty es hijo suyo. Es un acto explícito y ruidoso,
+no algo que pase de rebote reiniciando el orquestador — que es justamente lo
+que esta partición vino a comprar.
+
 ## Estructura
 
 ```
-cmd/webterm/          entrypoint y flags
-internal/store/       SQLite: sesiones, KV, historial de output y recursos
-internal/resources/   providers de sistemas externos (GitHub), caché con TTL
-internal/mcp/         servidor MCP: las tools sobre el session manager
-internal/session/     session manager: ptys vivos, fan-out, reconciliación
-internal/server/      HTTP, static file server, API REST, WebSocket
-internal/terminal/    wrapper del pty (spawn, read/write, resize, wait)
-web/                  frontend Vite + React + xterm.js
+cmd/webterm/            entrypoint, flags y arranque on-demand del daemon
+internal/store/         SQLite: sesiones, KV, historial de output y recursos
+internal/resources/     providers de sistemas externos (GitHub), caché con TTL
+internal/mcp/           servidor MCP: las tools sobre el control manager
+internal/control/       manager del orquestador: metadata, KV y recursos contra
+                         la base; delega los ptys al daemon
+internal/ptyapi/        contrato entre quien tiene los ptys (daemon o manager
+                         en proceso) y quien los usa
+internal/daemon/        proceso dueño de los ptys: lado servidor del socket
+internal/daemonclient/  lado cliente del socket: habla ptyapi contra un daemon
+                         remoto
+internal/session/       ptys vivos: spawn, pump, reap, hub, ring, writer —
+                         vive en el daemon, ya no hace ABM de sesiones
+internal/server/        HTTP, static file server, API REST, WebSocket
+internal/terminal/      wrapper del pty (spawn, read/write, resize, wait)
+web/                    frontend Vite + React + xterm.js
 ```
 
 ## Estado de las sesiones
 
-El pty es hijo del proceso Go: si el backend muere, mueren todas las sesiones.
-Por eso lo que persiste es el *registro* de la sesión, no el proceso. Hay cinco
-mecanismos que mantienen la DB sincronizada con la realidad:
+El pty es hijo del daemon, no del orquestador: si el daemon muere, mueren
+todas las sesiones (reiniciar el orquestador no las toca — ver "Arquitectura:
+daemon y orquestador"). Por eso lo que persiste en la base es el *registro* de
+la sesión, no el proceso. Antes de tener pty el registro pasa por `starting`,
+la ventana entre que el orquestador inserta la fila y el daemon confirma el
+spawn.
+
+Hay seis mecanismos que mantienen la DB sincronizada con la realidad:
 
 | Caso | Cómo se detecta | `exit_reason` |
 |---|---|---|
-| el shell hace `exit` | `cmd.Wait()` | `normal` |
-| el shell muere pero un nieto retiene el pty | `cmd.Wait()` (el `Read` no da EOF nunca) | `normal` |
-| se reinició el backend | barrido al abrir la base, antes de escuchar | `backend_restart` |
-| deriva entre la DB y las sesiones vivas | sweep cada 30 s | `orphaned` |
+| el shell hace `exit` | `cmd.Wait()`, en el daemon | `normal` |
+| el shell muere pero un nieto retiene el pty | `cmd.Wait()` (el `Read` no da EOF nunca), en el daemon | `normal` |
+| el daemon no pudo spawnear el pty | falla `pty.Spawn` al crear o reanudar | `spawn_failed` |
+| se reinició el daemon | sweep del orquestador contra lo que el daemon reporta vivo | `daemon_restart` |
+| deriva entre la DB y las sesiones vivas | mismo sweep, cada 30 s | `orphaned` |
 | lo mataste vos | `POST /kill` | `killed` |
 
 Reanudar (`POST /restart`) reusa la misma fila: conserva id, título, cwd, KV e
