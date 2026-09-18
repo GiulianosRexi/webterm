@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -48,26 +49,20 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 	if s.cfg.Token == "" {
 		return next
 	}
-	want := []byte(s.cfg.Token)
-
-	ok := func(got string) bool {
-		return subtle.ConstantTimeCompare([]byte(got), want) == 1
-	}
-
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if c, err := r.Cookie(cookieName); err == nil && ok(c.Value) {
+		// El login tiene que ser alcanzable justamente sin estar autenticado.
+		if r.URL.Path == loginPath {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if q := r.URL.Query().Get("token"); ok(q) {
-			http.SetCookie(w, &http.Cookie{
-				Name:     cookieName,
-				Value:    q,
-				Path:     "/",
-				HttpOnly: true,
-				SameSite: http.SameSiteLaxMode,
-				Expires:  time.Now().AddDate(0, 1, 0),
-			})
+		if c, err := r.Cookie(cookieName); err == nil && s.tokenOK(c.Value) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		// Atajo: ?token=... entra directo y deja la cookie, para poder mandarse
+		// un link ya autenticado.
+		if q := r.URL.Query().Get("token"); s.tokenOK(q) {
+			s.setSessionCookie(w, r)
 			clean := *r.URL
 			params := clean.Query()
 			params.Del("token")
@@ -75,7 +70,32 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 			http.Redirect(w, r, clean.RequestURI(), http.StatusFound)
 			return
 		}
-		http.Error(w, "no autorizado: falta ?token=...", http.StatusUnauthorized)
+		// Una navegación del browser ve la pantalla de login; el WebSocket y
+		// las llamadas de API, un 401 pelado.
+		if r.Method == http.MethodGet && strings.Contains(r.Header.Get("Accept"), "text/html") {
+			renderLogin(w, http.StatusUnauthorized, "")
+			return
+		}
+		http.Error(w, "no autorizado", http.StatusUnauthorized)
+	})
+}
+
+// tokenOK compara en tiempo constante contra el token configurado.
+func (s *Server) tokenOK(got string) bool {
+	return subtle.ConstantTimeCompare([]byte(got), []byte(s.cfg.Token)) == 1
+}
+
+// setSessionCookie deja la sesión guardada en el browser. Sin Secure porque
+// servimos HTTP plano en la LAN; detrás de TLS conviene activarlo.
+func (s *Server) setSessionCookie(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     cookieName,
+		Value:    s.cfg.Token,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   r.TLS != nil,
+		SameSite: http.SameSiteLaxMode,
+		Expires:  time.Now().AddDate(0, 1, 0),
 	})
 }
 

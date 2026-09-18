@@ -66,7 +66,8 @@ body {
 .status[data-state="closed"] .dot,
 .status[data-state="exited"] .dot { background: var(--danger); }
 
-button {
+button,
+.button {
   font: inherit;
   font-size: 12px;
   color: var(--fg);
@@ -75,9 +76,12 @@ button {
   border-radius: 6px;
   padding: 4px 10px;
   cursor: pointer;
+  text-decoration: none;
+  line-height: 1.6;
 }
 
-button:hover { border-color: var(--fg-dim); }
+button:hover,
+.button:hover { border-color: var(--fg-dim); }
 
 .terminal-host {
   flex: 1 1 auto;

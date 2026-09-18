@@ -44,7 +44,7 @@ Flags del backend:
 | `-addr` | `127.0.0.1:7788` | dirección de escucha |
 | `-static` | `web/dist` | carpeta con el build del frontend |
 | `-shell` | `$SHELL` | shell a spawnear |
-| `-token` | autogenerado | token de acceso |
+| `-token` | `$WEBTERM_TOKEN`, o autogenerado | token de acceso |
 | `-no-auth` | `false` | no pedir token aunque escuche en la red |
 
 ## Acceso desde otra máquina de la red
@@ -61,8 +61,19 @@ webterm escuchando en 0.0.0.0:7788
   → http://192.168.0.250:7788/?token=xxxxxxxx
 ```
 
-El primer acceso con `?token=` guarda una cookie, así que después alcanza con
-la URL pelada. Para fijar un token estable entre reinicios: `-token mi-token`.
+Desde el teléfono conviene entrar a la URL pelada (`http://192.168.0.250:7788`):
+aparece una pantalla de login donde pegás el token. La sesión queda en una
+cookie por 30 días, así que se pide una sola vez por dispositivo. El `?token=`
+del log es el atajo para saltear ese paso.
+
+Para fijar un token propio en vez del autogenerado:
+
+```bash
+WEBTERM_TOKEN='el-que-quieras' make run-lan   # el env var lo mantiene fuera del historial
+go run ./cmd/webterm -addr 0.0.0.0:7788 -token el-que-quieras
+```
+
+El botón **Salir** de la barra superior borra la cookie de ese dispositivo.
 
 ### Qué protege y qué no
 

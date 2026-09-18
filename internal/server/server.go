@@ -63,6 +63,8 @@ func New(cfg Config) *Server {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/health", s.handleHealth)
+	mux.HandleFunc(loginPath, s.handleLogin)
+	mux.HandleFunc("/api/logout", s.handleLogout)
 	mux.HandleFunc("/ws/terminal", s.handleTerminal)
 	mux.Handle("/", s.staticHandler())
 	return s.withAuth(mux)
@@ -115,7 +117,11 @@ func (s *Server) logURLs() {
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	_, _ = io.WriteString(w, `{"status":"ok"}`)
+	auth := "false"
+	if s.cfg.Token != "" {
+		auth = "true"
+	}
+	_, _ = io.WriteString(w, `{"status":"ok","auth":`+auth+`}`)
 }
 
 // staticHandler sirve el build de Vite, con fallback a index.html para que

@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { TerminalView, type ConnState } from './TerminalView'
 
 const label: Record<ConnState, string> = {
@@ -13,6 +13,15 @@ export function App() {
   // M1 no tiene persistencia de sesiones: "reiniciar" remonta el componente,
   // lo que cierra el WebSocket y spawnea un pty nuevo.
   const [generation, setGeneration] = useState(0)
+  // Solo mostramos "salir" si el backend está pidiendo token.
+  const [auth, setAuth] = useState(false)
+
+  useEffect(() => {
+    fetch('/api/health')
+      .then((r) => r.json())
+      .then((d: { auth?: boolean }) => setAuth(Boolean(d.auth)))
+      .catch(() => {})
+  }, [])
 
   const restart = useCallback(() => setGeneration((g) => g + 1), [])
 
@@ -28,6 +37,11 @@ export function App() {
         <button onClick={restart}>
           {state === 'open' ? 'Reiniciar sesión' : 'Reconectar'}
         </button>
+        {auth && (
+          <a className="button" href="/api/logout">
+            Salir
+          </a>
+        )}
       </header>
       <TerminalView key={generation} onState={setState} />
     </div>

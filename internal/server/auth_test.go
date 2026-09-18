@@ -1,8 +1,10 @@
 package server
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -126,6 +128,116 @@ func TestIsLoopback(t *testing.T) {
 	for addr, want := range cases {
 		if got := IsLoopback(addr); got != want {
 			t.Errorf("IsLoopback(%q) = %v, esperaba %v", addr, got, want)
+		}
+	}
+}
+
+// TestLoginPageEnNavegacion: una navegación del browser sin cookie tiene que
+// ver el formulario, no un 401 pelado.
+func TestLoginPageEnNavegacion(t *testing.T) {
+	srv := authServer(t)
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/", nil)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+
+	body := new(strings.Builder)
+	if _, err := io.Copy(body, res.Body); err != nil {
+		t.Fatal(err)
+	}
+	if res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("esperaba 401, obtuve %d", res.StatusCode)
+	}
+	if !strings.Contains(body.String(), `name="token"`) {
+		t.Fatalf("no se renderizó el formulario de login: %q", body.String())
+	}
+}
+
+// TestLoginFormCorrecto: el POST del formulario deja la cookie y manda a la UI.
+func TestLoginFormCorrecto(t *testing.T) {
+	srv := authServer(t)
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+
+	res, err := client.PostForm(srv.URL+loginPath, url.Values{"token": {testToken}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusFound {
+		t.Fatalf("esperaba 302, obtuve %d", res.StatusCode)
+	}
+	if loc := res.Header.Get("Location"); loc != "/" {
+		t.Fatalf("esperaba redirect a /, obtuve %q", loc)
+	}
+
+	var cookie *http.Cookie
+	for _, c := range res.Cookies() {
+		if c.Name == cookieName {
+			cookie = c
+		}
+	}
+	if cookie == nil {
+		t.Fatal("el login no dejó la cookie")
+	}
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws/terminal"
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, http.Header{
+		"Cookie": {cookie.Name + "=" + cookie.Value},
+	})
+	if err != nil {
+		t.Fatalf("con la cookie del login el WebSocket debería conectar: %v", err)
+	}
+	_ = conn.Close()
+}
+
+// TestLoginFormIncorrecto: token equivocado vuelve al formulario con el error.
+func TestLoginFormIncorrecto(t *testing.T) {
+	srv := authServer(t)
+	res, err := http.PostForm(srv.URL+loginPath, url.Values{"token": {"no-es"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+
+	body := new(strings.Builder)
+	_, _ = io.Copy(body, res.Body)
+	if res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("esperaba 401, obtuve %d", res.StatusCode)
+	}
+	if !strings.Contains(body.String(), "Token incorrecto") {
+		t.Fatal("no se mostró el mensaje de error")
+	}
+	for _, c := range res.Cookies() {
+		if c.Name == cookieName {
+			t.Fatal("se dejó cookie con un token incorrecto")
+		}
+	}
+}
+
+// TestLogout: salir invalida la cookie del browser.
+func TestLogout(t *testing.T) {
+	srv := authServer(t)
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/logout", nil)
+	req.AddCookie(&http.Cookie{Name: cookieName, Value: testToken})
+	res, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+
+	for _, c := range res.Cookies() {
+		if c.Name == cookieName && c.MaxAge >= 0 {
+			t.Fatalf("la cookie no se invalidó: MaxAge=%d", c.MaxAge)
 		}
 	}
 }
