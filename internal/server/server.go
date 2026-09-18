@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -36,6 +37,7 @@ type Config struct {
 	Addr      string // dirección de escucha, ej. "127.0.0.1:7788"
 	StaticDir string // carpeta con el build del frontend (web/dist)
 	Shell     string // shell a spawnear; vacío = $SHELL
+	Token     string // token requerido en cada request; vacío = sin auth
 }
 
 // Server sirve la UI y las sesiones de terminal.
@@ -52,8 +54,7 @@ func New(cfg Config) *Server {
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  4 * 1024,
 			WriteBufferSize: readBufSize,
-			// Uso personal en localhost: no chequeamos Origin.
-			CheckOrigin: func(*http.Request) bool { return true },
+			CheckOrigin:     sameOrigin,
 		},
 	}
 }
@@ -64,7 +65,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/health", s.handleHealth)
 	mux.HandleFunc("/ws/terminal", s.handleTerminal)
 	mux.Handle("/", s.staticHandler())
-	return mux
+	return s.withAuth(mux)
 }
 
 // ListenAndServe arranca el servidor HTTP.
@@ -74,8 +75,42 @@ func (s *Server) ListenAndServe() error {
 		Handler:           s.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	log.Printf("webterm escuchando en http://%s", s.cfg.Addr)
+	s.logURLs()
 	return srv.ListenAndServe()
+}
+
+// logURLs imprime las direcciones por las que se llega al server, con el
+// token incluido para poder copiar y pegar.
+func (s *Server) logURLs() {
+	suffix := ""
+	if s.cfg.Token != "" {
+		suffix = "/?token=" + s.cfg.Token
+	}
+
+	host, port, err := net.SplitHostPort(s.cfg.Addr)
+	if err != nil {
+		log.Printf("webterm escuchando en http://%s%s", s.cfg.Addr, suffix)
+		return
+	}
+
+	log.Printf("webterm escuchando en %s", s.cfg.Addr)
+	if host != "" && host != "0.0.0.0" && host != "::" {
+		log.Printf("  → http://%s:%s%s", host, port, suffix)
+		return
+	}
+
+	log.Printf("  → http://127.0.0.1:%s%s", port, suffix)
+	addrs, _ := net.InterfaceAddrs()
+	for _, a := range addrs {
+		ipnet, ok := a.(*net.IPNet)
+		if !ok || ipnet.IP.IsLoopback() || ipnet.IP.To4() == nil {
+			continue
+		}
+		log.Printf("  → http://%s:%s%s", ipnet.IP, port, suffix)
+	}
+	if s.cfg.Token == "" {
+		log.Printf("  ⚠️  sin token: cualquiera en la red puede abrir una shell acá")
+	}
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {

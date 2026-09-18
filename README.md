@@ -44,10 +44,42 @@ Flags del backend:
 | `-addr` | `127.0.0.1:7788` | dirección de escucha |
 | `-static` | `web/dist` | carpeta con el build del frontend |
 | `-shell` | `$SHELL` | shell a spawnear |
+| `-token` | autogenerado | token de acceso |
+| `-no-auth` | `false` | no pedir token aunque escuche en la red |
 
-> El default escucha solo en loopback. Para llegar desde otra máquina (ej. la
-> MacBook) usá `-addr 0.0.0.0:7788` detrás de Tailscale o un túnel SSH — el
-> endpoint todavía no tiene autenticación.
+## Acceso desde otra máquina de la red
+
+```bash
+make run-lan       # escucha en 0.0.0.0:7788 y genera un token
+```
+
+El log imprime las URLs con el token listo para copiar:
+
+```
+webterm escuchando en 0.0.0.0:7788
+  → http://127.0.0.1:7788/?token=xxxxxxxx
+  → http://192.168.0.250:7788/?token=xxxxxxxx
+```
+
+El primer acceso con `?token=` guarda una cookie, así que después alcanza con
+la URL pelada. Para fijar un token estable entre reinicios: `-token mi-token`.
+
+### Qué protege y qué no
+
+`/ws/terminal` entrega una shell con tus permisos, así que el token es
+obligatorio cuando el server no escucha solo en loopback (`-no-auth` lo
+desactiva a propósito). El handshake del WebSocket además exige `Origin` del
+mismo host, para que otra página abierta en tu browser no pueda conectarse
+usando tu cookie.
+
+Lo que **no** cubre: es HTTP plano, sin TLS. En tu LAN el token y todo lo que
+tipeás viajan en claro y cualquiera con acceso a la red puede leerlos. Para
+salir de la LAN no expongas el puerto en el router — usá Tailscale (`tailscale
+serve` te da HTTPS) o un túnel SSH:
+
+```bash
+ssh -N -L 7788:127.0.0.1:7788 giuliano@192.168.0.250
+```
 
 ## Tests
 

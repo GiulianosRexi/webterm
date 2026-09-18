@@ -1,11 +1,16 @@
 SHELL := /bin/bash
-ADDR ?= 127.0.0.1:7788
+PORT ?= 7788
+ADDR ?= 127.0.0.1:$(PORT)
 
-.PHONY: run build build-web dev clean
+.PHONY: run run-lan build build-web dev clean
 
 ## run: buildea el frontend y levanta el backend sirviendo web/dist
 run: build-web
 	go run ./cmd/webterm -addr $(ADDR)
+
+## run-lan: igual que run pero accesible desde la red local (genera token)
+run-lan: build-web
+	go run ./cmd/webterm -addr 0.0.0.0:$(PORT)
 
 ## build: binario en bin/webterm + frontend
 build: build-web
