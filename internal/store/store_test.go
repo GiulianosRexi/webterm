@@ -136,7 +136,7 @@ func TestMigracionSobreBaseV1(t *testing.T) {
 	// Y la tabla nueva quedó usable.
 	if err := st.AddResource(&Resource{
 		SessionID: "vieja", System: "gh", Type: "pr",
-		Ref:       "https://github.com/o/r/pull/1",
+		Ref: "https://github.com/o/r/pull/1",
 	}); err != nil {
 		t.Fatalf("la tabla nueva no quedó usable: %v", err)
 	}
