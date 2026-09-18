@@ -8,3 +8,6 @@ web/dist/
 
 # Editor / OS
 .DS_Store
+
+# Caché incremental de tsc (se regenera en cada build)
+web/tsconfig.tsbuildinfo
