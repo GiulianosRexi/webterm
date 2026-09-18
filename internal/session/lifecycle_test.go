@@ -5,8 +5,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"time"
 
+	"github.com/giuliano/webterm/internal/ptyapi"
 	"github.com/giuliano/webterm/internal/store"
 )
 
@@ -14,19 +14,24 @@ import (
 // justamente para que el historial no se vaya sin que nadie lo pida.
 func TestKillConservaElHistorial(t *testing.T) {
 	m, st := newTestManager(t)
-	rec, _ := m.Create(CreateOpts{Cwd: "/tmp", Cols: 80, Rows: 24})
+	id := spawnTest(t, m, st, nil)
 
-	att, _ := m.Attach(rec.ID)
-	_ = m.Write(rec.ID, []byte("echo sobrevive-al-kill\n"))
-	awaitChunk(t, att.Output, "sobrevive-al-kill")
+	att, err := m.Attach(id)
+	if err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	if err := att.Write([]byte("echo sobrevive-al-kill\n")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	awaitChunk(t, att.Output(), "sobrevive-al-kill")
 	att.Detach()
 
-	if err := m.Kill(rec.ID); err != nil {
+	if err := m.Kill(id); err != nil {
 		t.Fatalf("Kill: %v", err)
 	}
 
 	// Kill es sincrónico: al volver, la DB ya tiene que estar reconciliada.
-	got, err := st.GetSession(rec.ID)
+	got, err := st.GetSession(id)
 	if err != nil {
 		t.Fatalf("GetSession: %v", err)
 	}
@@ -37,167 +42,67 @@ func TestKillConservaElHistorial(t *testing.T) {
 		t.Fatalf("exit_reason = %q, se esperaba killed", got.ExitReason)
 	}
 
-	hist, _ := st.ReadOutput(rec.ID)
+	hist, _ := st.ReadOutput(id)
 	if !bytes.Contains(hist, []byte("sobrevive-al-kill")) {
 		t.Fatalf("el kill se llevó el historial: %q", tail(hist, 200))
 	}
 }
 
-func TestKillEsIdempotente(t *testing.T) {
-	m, _ := newTestManager(t)
-	rec, _ := m.Create(CreateOpts{Cwd: "/tmp", Cols: 80, Rows: 24})
-
-	if err := m.Kill(rec.ID); err != nil {
-		t.Fatalf("Kill 1: %v", err)
-	}
-	if err := m.Kill(rec.ID); err != nil {
-		t.Fatalf("Kill 2: %v", err)
-	}
-	if err := m.Kill("no-existe"); !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("Kill de inexistente: %v", err)
-	}
-}
-
-// TestRestartReusaLaFila: reanudar conserva id, título, KV e historial. Es lo
-// que M6 va a necesitar para colgarle el `claude --resume`.
-func TestRestartReusaLaFila(t *testing.T) {
+func TestKillSesionNoVivaDaErrNotLive(t *testing.T) {
 	m, st := newTestManager(t)
-	rec, _ := m.Create(CreateOpts{Title: "con historia", Cwd: "/tmp", Cols: 80, Rows: 24})
-	_ = st.SetKV(rec.ID, "claude_session_id", "abc-123")
-
-	att, _ := m.Attach(rec.ID)
-	_ = m.Write(rec.ID, []byte("echo antes-del-restart\n"))
-	awaitChunk(t, att.Output, "antes-del-restart")
-	att.Detach()
-	if err := m.Kill(rec.ID); err != nil {
-		t.Fatalf("Kill: %v", err)
+	id := spawnTest(t, m, st, nil)
+	if err := m.Kill(id); err != nil {
+		t.Fatal(err)
 	}
-
-	vuelto, err := m.Restart(rec.ID, 100, 30)
-	if err != nil {
-		t.Fatalf("Restart: %v", err)
-	}
-	if vuelto.ID != rec.ID {
-		t.Fatalf("Restart cambió el id: %s -> %s", rec.ID, vuelto.ID)
-	}
-	if vuelto.Title != "con historia" {
-		t.Fatalf("se perdió el título: %q", vuelto.Title)
-	}
-	if vuelto.PtyStatus != store.StatusRunning {
-		t.Fatalf("pty_status = %q", vuelto.PtyStatus)
-	}
-	if vuelto.ExitReason != "" || vuelto.ExitCode != nil {
-		t.Fatalf("quedaron rastros de la muerte anterior: %+v", vuelto)
-	}
-
-	kv, _ := st.ListKV(rec.ID)
-	if kv["claude_session_id"] != "abc-123" {
-		t.Fatalf("se perdió el KV: %v", kv)
-	}
-
-	att2, err := m.Attach(rec.ID)
-	if err != nil {
-		t.Fatalf("Attach después del restart: %v", err)
-	}
-	defer att2.Detach()
-	if !att2.Live {
-		t.Fatal("la sesión reanudada no está viva")
-	}
-	if !bytes.Contains(att2.History, []byte("antes-del-restart")) {
-		t.Fatalf("el replay perdió lo anterior al restart: %q", tail(att2.History, 300))
-	}
-	if !bytes.Contains(att2.History, []byte("sesión reanudada")) {
-		t.Fatalf("falta el marcador de reanudación: %q", tail(att2.History, 300))
-	}
-
-	// Y el proceso nuevo responde.
-	_ = m.Write(rec.ID, []byte("echo despues-del-restart\n"))
-	awaitChunk(t, att2.Output, "despues-del-restart")
-}
-
-func TestRestartSobreSesionViva(t *testing.T) {
-	m, _ := newTestManager(t)
-	rec, _ := m.Create(CreateOpts{Cwd: "/tmp", Cols: 80, Rows: 24})
-
-	if _, err := m.Restart(rec.ID, 80, 24); !errors.Is(err, ErrAlreadyRunning) {
-		t.Fatalf("se esperaba ErrAlreadyRunning, vino %v", err)
+	// La idempotencia es del orquestador, que sabe si la fila existe. Acá el
+	// contrato es literal: no hay proceso que matar.
+	if err := m.Kill(id); !errors.Is(err, ptyapi.ErrNotLive) {
+		t.Fatalf("segundo Kill dio %v; quería ErrNotLive", err)
 	}
 }
 
-func TestDeleteBorraTodo(t *testing.T) {
+// Garantía load-bearing: cuando al cliente se le cierra el canal de output, la
+// fila YA dice exited. Todo el manejo de fin de sesión —el del daemon y el del
+// orquestador— depende de este orden.
+func TestLaFilaYaEstaMarcadaCuandoSeCierraElOutput(t *testing.T) {
 	m, st := newTestManager(t)
-	rec, _ := m.Create(CreateOpts{Cwd: "/tmp", Cols: 80, Rows: 24})
-	_ = st.SetKV(rec.ID, "k", "v")
+	id := spawnTest(t, m, st, nil)
 
-	att, _ := m.Attach(rec.ID)
-	_ = m.Write(rec.ID, []byte("echo hola\n"))
-	awaitChunk(t, att.Output, "hola")
-	att.Detach()
-
-	if err := m.Delete(rec.ID); err != nil {
-		t.Fatalf("Delete: %v", err)
-	}
-	if _, err := st.GetSession(rec.ID); !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("la fila sigue ahí: %v", err)
-	}
-	hist, _ := st.ReadOutput(rec.ID)
-	if len(hist) != 0 {
-		t.Fatalf("quedó historial huérfano: %d bytes", len(hist))
-	}
-	kv, _ := st.ListKV(rec.ID)
-	if len(kv) != 0 {
-		t.Fatalf("quedó KV huérfano: %v", kv)
-	}
-}
-
-// TestSweepMarcaHuerfanas cubre el caso de desincronización: la DB dice que la
-// sesión está viva pero no hay proceso detrás.
-func TestSweepMarcaHuerfanas(t *testing.T) {
-	m, st := newTestManager(t)
-
-	// Fila viva escrita a mano, sin pty: simula la desincronización.
-	err := st.CreateSession(&store.Session{
-		ID: "fantasma", Cwd: "/tmp", Shell: "/bin/bash", Cols: 80, Rows: 24,
-		PtyStatus: store.StatusRunning,
-	})
+	att, err := m.Attach(id)
 	if err != nil {
-		t.Fatalf("CreateSession: %v", err)
+		t.Fatal(err)
 	}
-	// Y una de verdad, que el sweep no tiene que tocar.
-	viva, _ := m.Create(CreateOpts{Cwd: "/tmp", Cols: 80, Rows: 24})
-
-	if n := m.Sweep(); n != 1 {
-		t.Fatalf("el sweep corrigió %d filas, se esperaba 1", n)
+	defer att.Detach()
+	if err := att.Write([]byte("exit\n")); err != nil {
+		t.Fatal(err)
 	}
 
-	got, _ := st.GetSession("fantasma")
-	if got.PtyStatus != store.StatusExited || got.ExitReason != string(store.ReasonOrphaned) {
-		t.Fatalf("la huérfana no se reconcilió: %+v", got)
+	for range att.Output() {
+		// drenar hasta que cierre
 	}
-	sigue, _ := st.GetSession(viva.ID)
-	if sigue.PtyStatus != store.StatusRunning {
-		t.Fatalf("el sweep mató una sesión viva: %+v", sigue)
+
+	rec, err := st.GetSession(id)
+	if err != nil {
+		t.Fatal(err)
 	}
-	// Idempotente: en la segunda pasada ya no hay nada que corregir.
-	if n := m.Sweep(); n != 0 {
-		t.Fatalf("el segundo sweep corrigió %d filas", n)
+	if rec.PtyStatus != store.StatusExited {
+		t.Fatalf("al cerrarse el output la fila decía %s; quería exited", rec.PtyStatus)
 	}
 }
 
-// TestCloseMataTodo: al apagar el backend no quedan procesos sueltos ni filas
+// TestCloseMataTodo: al apagar el daemon no quedan procesos sueltos ni filas
 // mintiendo.
 func TestCloseMataTodo(t *testing.T) {
-	st := newTestStore(t)
-	m := NewManager(st, Config{Shell: "/bin/bash", HistoryBytes: 1 << 20, SweepEvery: time.Hour})
-	if err := m.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	rec, _ := m.Create(CreateOpts{Cwd: "/tmp", Cols: 80, Rows: 24})
+	m, st := newTestManager(t)
+	id := spawnTest(t, m, st, nil)
 
 	if err := m.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	got, _ := st.GetSession(rec.ID)
+	got, err := st.GetSession(id)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
 	if got.PtyStatus != store.StatusExited {
 		t.Fatalf("pty_status = %q después de Close", got.PtyStatus)
 	}
@@ -207,41 +112,43 @@ func TestCloseMataTodo(t *testing.T) {
 }
 
 // TestExtraEnvLlegaAlPty: el cliente MCP que corre adentro de la sesión saca el
-// token de su propio entorno, así que tiene que estar ahí.
+// token de su propio entorno, así que tiene que estar ahí. Las variables las
+// arma el orquestador y llegan resueltas en SpawnOpts: el dueño del pty no sabe
+// que existe un token.
 func TestExtraEnvLlegaAlPty(t *testing.T) {
-	st := newTestStore(t)
-	m := NewManager(st, Config{
-		Shell: "/bin/bash", HistoryBytes: 1 << 20, SweepEvery: time.Hour,
-		ExtraEnv: []string{"WEBTERM_TOKEN=un-token-de-prueba"},
-	})
-	if err := m.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	t.Cleanup(func() { _ = m.Close() })
+	m, st := newTestManager(t)
+	id := spawnTest(t, m, st, []string{"WEBTERM_TOKEN=un-token-de-prueba"})
 
-	rec, err := m.Create(CreateOpts{Cwd: "/tmp", Cols: 80, Rows: 24})
+	att, err := m.Attach(id)
 	if err != nil {
-		t.Fatalf("Create: %v", err)
+		t.Fatalf("Attach: %v", err)
 	}
-	att, _ := m.Attach(rec.ID)
 	defer att.Detach()
 
 	// El id de sesión ya viajaba desde M1; el token es lo que suma M9.
-	_ = m.Write(rec.ID, []byte("echo T=$WEBTERM_TOKEN S=$WEBTERM_SESSION_ID\n"))
-	out := awaitChunk(t, att.Output, "T=un-token-de-prueba")
-	if !strings.Contains(out, "S="+rec.ID) {
+	if err := att.Write([]byte("echo T=$WEBTERM_TOKEN S=$WEBTERM_SESSION_ID\n")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	out := awaitChunk(t, att.Output(), "T=un-token-de-prueba")
+	if !strings.Contains(out, "S="+id) {
 		t.Fatalf("falta el id de sesión en el entorno: %q", tail([]byte(out), 200))
 	}
 }
 
-// TestSinExtraEnvNoHayToken: sin token configurado no se filtra una variable
-// vacía al entorno.
+// TestSinExtraEnvNoHayToken: sin token en el SpawnOpts no se filtra una
+// variable vacía al entorno.
 func TestSinExtraEnvNoHayToken(t *testing.T) {
-	m, _ := newTestManager(t)
-	rec, _ := m.Create(CreateOpts{Cwd: "/tmp", Cols: 80, Rows: 24})
-	att, _ := m.Attach(rec.ID)
+	m, st := newTestManager(t)
+	id := spawnTest(t, m, st, nil)
+
+	att, err := m.Attach(id)
+	if err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
 	defer att.Detach()
 
-	_ = m.Write(rec.ID, []byte("echo TOKEN=[${WEBTERM_TOKEN:-vacio}]\n"))
-	awaitChunk(t, att.Output, "TOKEN=[vacio]")
+	if err := att.Write([]byte("echo TOKEN=[${WEBTERM_TOKEN:-vacio}]\n")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	awaitChunk(t, att.Output(), "TOKEN=[vacio]")
 }

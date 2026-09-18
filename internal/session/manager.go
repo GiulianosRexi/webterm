@@ -1,17 +1,14 @@
 package session
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"log"
-	"os"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/giuliano/webterm/internal/resources"
+	"github.com/giuliano/webterm/internal/ptyapi"
 	"github.com/giuliano/webterm/internal/store"
 	"github.com/giuliano/webterm/internal/terminal"
 )
@@ -21,8 +18,6 @@ const (
 	readBufSize = 32 * 1024
 	// Cuántos chunks se le bufferean a un cliente antes de darlo por lento.
 	subBuffer = 256
-	// Cada cuánto se verifica que la DB y el mapa de sesiones vivas coincidan.
-	defaultSweepInterval = 30 * time.Second
 	// Cuánto se espera a que una sesión muerta termine de reconciliarse.
 	reapTimeout = 5 * time.Second
 )
@@ -30,40 +25,29 @@ const (
 // DefaultHistoryBytes es el cap de historial por sesión.
 const DefaultHistoryBytes int64 = 1 << 20
 
-var (
-	// ErrNotLive lo devuelven las operaciones que necesitan un proceso vivo.
-	ErrNotLive = errors.New("la sesión no está corriendo")
-	// ErrAlreadyRunning lo devuelve Restart sobre una sesión que no murió.
-	ErrAlreadyRunning = errors.New("la sesión ya está corriendo")
-)
-
-// resumeBanner queda en el historial para que el replay muestre dónde se
-// cortó la sesión anterior.
-var resumeBanner = []byte("\r\n\x1b[90m— sesión reanudada —\x1b[0m\r\n")
-
-// Config parametriza el manager.
+// Config parametriza el manager. Es corta a propósito: todo lo que no sea el
+// pty —shell por defecto, variables de entorno, recursos externos— lo resuelve
+// el orquestador y llega resuelto en cada SpawnOpts.
 type Config struct {
-	Shell        string        // shell a spawnear; vacío = $SHELL
-	HistoryBytes int64         // cap de historial por sesión
-	SweepEvery   time.Duration // cada cuánto corre la verificación de invariante
-	// Resources resuelve el estado de los recursos externos linkeados. Si es
-	// nil, linkear por URL deja de funcionar pero el resto del manager anda
-	// igual: la integración es opcional y no puede tumbar las sesiones.
-	Resources *resources.Cache
-	// ExtraEnv son variables que se suman al entorno de cada pty. El
-	// entrypoint las arma; así este paquete no necesita saber, por ejemplo,
-	// que existe un token de autenticación.
-	ExtraEnv []string
+	HistoryBytes int64 // cap de historial por sesión
 }
 
-// Manager es el dueño de los ptys vivos. Es la única capa que compone
-// terminal con store; el servidor HTTP habla solo con él.
+// Manager es el dueño de los ptys vivos. Es la implementación en proceso de
+// ptyapi.Client: del otro lado del contrato puede estar esto o el cliente del
+// daemon, y quien lo use no tiene que notar la diferencia.
+//
+// De la base toca solo lo que es estado del pty: el historial y las columnas
+// pty_status, exit_*, cols y rows. La metadata —título, KV, recursos— es del
+// orquestador y acá no se la conoce.
 type Manager struct {
 	st  *store.Store
 	cfg Config
 
 	mu   sync.RWMutex
 	live map[string]*liveSession
+
+	// spawnMu serializa Spawn entero. Ver el comentario de Spawn.
+	spawnMu sync.Mutex
 
 	stop     chan struct{}
 	stopOnce sync.Once
@@ -110,13 +94,12 @@ func (l *liveSession) detach(s *subscriber) {
 	l.mu.Unlock()
 }
 
-// NewManager construye el manager. No toca la base hasta Start.
+// NewManager construye el manager. No toca la base: la reconciliación de lo
+// que quedó de la ejecución anterior es del orquestador, que es el único que
+// puede distinguir una fila huérfana de una sesión que todavía no arrancó.
 func NewManager(st *store.Store, cfg Config) *Manager {
 	if cfg.HistoryBytes <= 0 {
 		cfg.HistoryBytes = DefaultHistoryBytes
-	}
-	if cfg.SweepEvery <= 0 {
-		cfg.SweepEvery = defaultSweepInterval
 	}
 	return &Manager{
 		st:   st,
@@ -124,22 +107,6 @@ func NewManager(st *store.Store, cfg Config) *Manager {
 		live: map[string]*liveSession{},
 		stop: make(chan struct{}),
 	}
-}
-
-// Start reconcilia lo que quedó de la ejecución anterior y arranca la
-// verificación periódica. Tiene que correr antes de aceptar requests: si no,
-// hay una ventana en la que la API reporta vivas sesiones que no lo están.
-func (m *Manager) Start() error {
-	n, err := m.st.ReconcileBoot()
-	if err != nil {
-		return err
-	}
-	if n > 0 {
-		log.Printf("reconciliadas %d sesiones que el reinicio del backend se llevó puestas", n)
-	}
-	m.wg.Add(1)
-	go m.sweepLoop()
-	return nil
 }
 
 // Close apaga el manager: mata las sesiones vivas y espera a que todas
@@ -162,71 +129,61 @@ func (m *Manager) Close() error {
 	return nil
 }
 
-// CreateOpts describe la sesión a crear.
-type CreateOpts struct {
-	Title       string
-	Description string
-	Cwd         string
-	Cols, Rows  int
-}
+// Spawn arranca el pty de una sesión cuya fila ya existe.
+//
+// No inserta nada: la fila la crea el orquestador antes de llamar acá, porque
+// session_output tiene FK contra sessions y el historial empieza a escribirse
+// apenas arranca el pump.
+//
+// Está serializado entero bajo spawnMu: spawnear es raro y barato de
+// serializar, y sin eso dos Spawn concurrentes del mismo id podrían pasar los
+// dos el chequeo de "no está vivo" y dejar un pty huérfano en el mapa.
+func (m *Manager) Spawn(o ptyapi.SpawnOpts) error {
+	m.spawnMu.Lock()
+	defer m.spawnMu.Unlock()
 
-// Create persiste la sesión y spawnea su pty.
-func (m *Manager) Create(o CreateOpts) (*store.Session, error) {
+	rec, err := m.st.GetSession(o.ID)
+	if err != nil {
+		return err
+	}
+	if m.lookup(o.ID) != nil {
+		return ptyapi.ErrAlreadyLive
+	}
 	if o.Cols <= 0 {
-		o.Cols = 80
+		o.Cols = rec.Cols
 	}
 	if o.Rows <= 0 {
-		o.Rows = 24
-	}
-	shell := m.cfg.Shell
-	if shell == "" {
-		shell = os.Getenv("SHELL")
-	}
-	if shell == "" {
-		shell = "/bin/zsh"
-	}
-	cwd := o.Cwd
-	if cwd == "" {
-		cwd, _ = os.UserHomeDir()
+		o.Rows = rec.Rows
 	}
 
-	rec := &store.Session{
-		ID: store.NewID(), Title: o.Title, Description: o.Description,
-		Cwd: cwd, Shell: shell, Cols: o.Cols, Rows: o.Rows,
-		PtyStatus: store.StatusRunning,
-	}
-
-	pt, err := terminal.New(rec.ID, terminal.Config{
-		Shell: shell, Cwd: cwd, Rows: uint16(o.Rows), Cols: uint16(o.Cols),
-		Env: m.cfg.ExtraEnv,
+	pt, err := terminal.New(o.ID, terminal.Config{
+		Shell: o.Shell, Cwd: o.Cwd,
+		Rows: uint16(o.Rows), Cols: uint16(o.Cols), Env: o.Env,
 	})
 	if err != nil {
-		// Dejamos la fila igual, marcada como fallida: así el error aparece
-		// en la UI en vez de perderse en un log del servidor.
-		now := time.Now().UnixMilli()
-		rec.PtyStatus = store.StatusExited
-		rec.ExitReason = string(store.ReasonSpawnFailed)
-		rec.ExitedAt = &now
-		if cerr := m.st.CreateSession(rec); cerr != nil {
-			log.Printf("[%s] no se pudo registrar el spawn fallido: %v", rec.ID, cerr)
+		// El error queda en la fila, no en un log: así aparece en la UI en vez
+		// de perderse.
+		code := -1
+		if merr := m.st.MarkExited(o.ID, store.ReasonSpawnFailed, &code); merr != nil {
+			log.Printf("[%s] no se pudo registrar el spawn fallido: %v", o.ID, merr)
 		}
-		return nil, fmt.Errorf("spawneando la sesión: %w", err)
+		return fmt.Errorf("spawneando la sesión %s: %w", o.ID, err)
 	}
 
-	// El insert va bajo el mismo candado que el registro en el mapa: el sweep
-	// toma RLock, así que nunca puede ver una fila viva sin sesión asociada y
-	// declararla huérfana por error.
+	// El MarkRunning va bajo el mismo candado que el registro en el mapa: el
+	// sweep del orquestador toma la foto de las vivas con RLock, así que nunca
+	// puede ver una fila running sin sesión asociada y declararla huérfana.
 	m.mu.Lock()
-	if err := m.st.CreateSession(rec); err != nil {
+	if err := m.st.MarkRunning(o.ID, o.Cols, o.Rows); err != nil {
 		m.mu.Unlock()
 		_ = pt.Close()
-		return nil, err
+		return err
 	}
-	m.startLive(rec, pt, nil)
+	m.startLive(rec, pt, []byte(o.Banner))
 	m.mu.Unlock()
 
-	log.Printf("[%s] sesión creada (%dx%d) en %s", rec.ID, o.Cols, o.Rows, cwd)
-	return rec, nil
+	log.Printf("[%s] pty arrancado (%dx%d) en %s", o.ID, o.Cols, o.Rows, o.Cwd)
+	return nil
 }
 
 // startLive arma la sesión viva y lanza sus goroutines. Hay que llamarla con
@@ -281,6 +238,11 @@ func (m *Manager) pump(l *liveSession) {
 }
 
 // reap espera la muerte del proceso y deja la DB y los clientes consistentes.
+//
+// El orden importa y es load-bearing: primero se marca la fila y recién
+// después se cierran los clientes. Así, cuando a un cliente se le cierra el
+// canal de output, la fila ya dice exited con su código, y todo el manejo de
+// fin de sesión puede leerla sin esperar nada.
 func (m *Manager) reap(l *liveSession) {
 	defer m.wg.Done()
 
@@ -314,55 +276,16 @@ func (m *Manager) reap(l *liveSession) {
 	log.Printf("[%s] sesión terminada (%s, código %d)", l.id, reason, code)
 }
 
-// Attachment es la conexión de un cliente a una sesión.
-type Attachment struct {
-	Session *store.Session
-	// History es el replay que hay que mandar antes del stream vivo.
-	History []byte
-	// Live dice si hay proceso corriendo. Si es false, Output es nil y la
-	// conexión queda de solo lectura.
-	Live   bool
-	Output <-chan []byte
-
-	sub  *subscriber
-	live *liveSession
-}
-
-// Detach desconecta al cliente sin tocar la sesión.
-func (a *Attachment) Detach() {
-	if a.live != nil && a.sub != nil {
-		a.live.detach(a.sub)
-	}
-}
-
-// Dropped dice si al cliente lo expulsamos por no leer a tiempo.
-func (a *Attachment) Dropped() bool {
-	return a.sub != nil && a.sub.wasDropped()
-}
-
-// Attach conecta un cliente. Una sesión muerta se attachea igual, en modo
-// lectura: así ver su historial no necesita una vista aparte.
-func (m *Manager) Attach(id string) (*Attachment, error) {
-	rec, err := m.st.GetSession(id)
-	if err != nil {
-		return nil, err
-	}
-
+// Attach conecta un cliente al pty. Una sesión sin proceso da ErrNotLive: el
+// camino de solo lectura sobre el historial es del orquestador, que lo resuelve
+// contra la base sin consultar acá.
+func (m *Manager) Attach(id string) (ptyapi.Attachment, error) {
 	l := m.lookup(id)
 	if l == nil {
-		hist, err := m.st.ReadOutput(id)
-		if err != nil {
-			return nil, err
-		}
-		return &Attachment{Session: rec, History: sanitizeReplay(hist)}, nil
+		return nil, ptyapi.ErrNotLive
 	}
-
 	hist, sub := l.attach(subBuffer)
-	_ = m.st.TouchActive(id)
-	return &Attachment{
-		Session: rec, History: sanitizeReplay(hist), Live: true,
-		Output: sub.out(), sub: sub, live: l,
-	}, nil
+	return &Attachment{m: m, live: l, history: sanitizeReplay(hist), sub: sub}, nil
 }
 
 // sanitizeReplay prepara el tail para un cliente nuevo. El historial está
@@ -378,74 +301,12 @@ func sanitizeReplay(p []byte) []byte {
 	return append([]byte("\x1b[0m"), p...)
 }
 
-// Write manda input al pty.
-func (m *Manager) Write(id string, p []byte) error {
-	l := m.lookup(id)
-	if l == nil {
-		return ErrNotLive
-	}
-	if _, err := l.pty.Write(p); err != nil {
-		return err
-	}
-	return nil
-}
-
-// Resize cambia el tamaño del pty y lo persiste, para que al reanudar la
-// sesión vuelva con las dimensiones que tenía.
-func (m *Manager) Resize(id string, rows, cols uint16) error {
-	l := m.lookup(id)
-	if l == nil {
-		return ErrNotLive
-	}
-	if err := l.pty.Resize(rows, cols); err != nil {
-		return err
-	}
-	return m.st.UpdateSize(id, int(cols), int(rows))
-}
-
-// List devuelve todas las sesiones, la más nueva primero.
-func (m *Manager) List() ([]*store.Session, error) { return m.st.ListSessions() }
-
-// Get devuelve una sesión por id.
-func (m *Manager) Get(id string) (*store.Session, error) { return m.st.GetSession(id) }
-
-// UpdateMeta aplica un update parcial y devuelve la sesión ya actualizada.
-func (m *Manager) UpdateMeta(id string, p store.MetaPatch) (*store.Session, error) {
-	if err := m.st.UpdateMeta(id, p); err != nil {
-		return nil, err
-	}
-	return m.st.GetSession(id)
-}
-
-// LiveCount es cuántas sesiones tienen proceso corriendo ahora mismo.
-func (m *Manager) LiveCount() int {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return len(m.live)
-}
-
-// ListKV, SetKV y DeleteKV son el contexto persistido de la sesión. El
-// servidor no habla con el store directamente: todo pasa por acá.
-func (m *Manager) ListKV(id string) (map[string]string, error) { return m.st.ListKV(id) }
-
-func (m *Manager) SetKV(id, key, value string) error {
-	if _, err := m.st.GetSession(id); err != nil {
-		return err
-	}
-	return m.st.SetKV(id, key, value)
-}
-
-func (m *Manager) DeleteKV(id, key string) error { return m.st.DeleteKV(id, key) }
-
 // Kill mata el proceso y conserva la fila y el historial. Es sincrónico: al
 // volver, la DB ya refleja la muerte, así que un GET inmediato no miente.
-// Es idempotente sobre una sesión ya muerta, pero devuelve ErrNotFound si no
-// existe.
 func (m *Manager) Kill(id string) error {
 	l := m.lookup(id)
 	if l == nil {
-		_, err := m.st.GetSession(id)
-		return err
+		return ptyapi.ErrNotLive
 	}
 	l.killed.Store(true)
 	if err := l.pty.Kill(); err != nil {
@@ -459,107 +320,16 @@ func (m *Manager) Kill(id string) error {
 	}
 }
 
-// Restart spawnea un pty nuevo sobre la misma fila: conserva id, título, cwd,
-// KV e historial, y sigue apendeando al mismo historial. Reusar la fila es lo
-// que va a permitir en M6 reanudar con `claude --resume` usando el KV de la
-// propia sesión.
-func (m *Manager) Restart(id string, cols, rows int) (*store.Session, error) {
-	rec, err := m.st.GetSession(id)
-	if err != nil {
-		return nil, err
+// LiveIDs son las sesiones con proceso corriendo. Es la fuente de verdad del
+// sweep del orquestador: lo que no está acá y la base cree activo, está muerto.
+func (m *Manager) LiveIDs() ([]string, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	ids := make([]string, 0, len(m.live))
+	for id := range m.live {
+		ids = append(ids, id)
 	}
-	if m.lookup(id) != nil {
-		return nil, ErrAlreadyRunning
-	}
-	if cols <= 0 {
-		cols = rec.Cols
-	}
-	if rows <= 0 {
-		rows = rec.Rows
-	}
-
-	pt, err := terminal.New(id, terminal.Config{
-		Shell: rec.Shell, Cwd: rec.Cwd, Rows: uint16(rows), Cols: uint16(cols),
-		Env: m.cfg.ExtraEnv,
-	})
-	if err != nil {
-		code := -1
-		_ = m.st.MarkExited(id, store.ReasonSpawnFailed, &code)
-		return nil, fmt.Errorf("reanudando %s: %w", id, err)
-	}
-
-	m.mu.Lock()
-	if err := m.st.MarkRunning(id, cols, rows); err != nil {
-		m.mu.Unlock()
-		_ = pt.Close()
-		return nil, err
-	}
-	m.startLive(rec, pt, resumeBanner)
-	m.mu.Unlock()
-
-	rec.PtyStatus = store.StatusRunning
-	rec.Cols, rec.Rows = cols, rows
-	rec.ExitReason, rec.ExitCode, rec.ExitedAt = "", nil, nil
-
-	log.Printf("[%s] sesión reanudada (%dx%d)", id, cols, rows)
-	return rec, nil
-}
-
-// Delete mata el proceso si vive y borra la fila con su KV y su historial.
-// Es el acto destructivo explícito, separado de Kill a propósito.
-func (m *Manager) Delete(id string) error {
-	if l := m.lookup(id); l != nil {
-		l.killed.Store(true)
-		_ = l.pty.Kill()
-		select {
-		case <-l.reaped:
-		case <-time.After(reapTimeout):
-			log.Printf("[%s] no terminó a tiempo; se borra igual", id)
-		}
-	}
-	return m.st.DeleteSession(id)
-}
-
-// Sweep marca como muertas las filas que la DB cree vivas pero que no tienen
-// sesión asociada. Es una verificación de invariante, no el camino principal:
-// en condiciones normales reap() siempre llega primero. Existe para que un bug
-// del camino principal se autocorrija en vez de dejar la UI mintiendo.
-// Devuelve cuántas filas corrigió.
-func (m *Manager) Sweep() int {
-	ids, err := m.st.RunningIDs()
-	if err != nil {
-		log.Printf("sweep: %v", err)
-		return 0
-	}
-	n := 0
-	for _, id := range ids {
-		if m.lookup(id) != nil {
-			continue
-		}
-		if err := m.st.MarkExited(id, store.ReasonOrphaned, nil); err != nil {
-			if !errors.Is(err, store.ErrNotFound) {
-				log.Printf("sweep [%s]: %v", id, err)
-			}
-			continue
-		}
-		log.Printf("[%s] huérfana: la DB la daba por viva pero no hay proceso detrás", id)
-		n++
-	}
-	return n
-}
-
-func (m *Manager) sweepLoop() {
-	defer m.wg.Done()
-	ticker := time.NewTicker(m.cfg.SweepEvery)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-m.stop:
-			return
-		case <-ticker.C:
-			m.Sweep()
-		}
-	}
+	return ids, nil
 }
 
 func (m *Manager) lookup(id string) *liveSession {
@@ -568,82 +338,7 @@ func (m *Manager) lookup(id string) *liveSession {
 	return m.live[id]
 }
 
-// ErrUnknownResource se re-exporta para que el servidor traduzca el error a un
-// status sin tener que importar el paquete resources.
-var ErrUnknownResource = resources.ErrUnknownResource
-
-// LinkedResource es un recurso linkeado junto con su estado actual.
-type LinkedResource struct {
-	*store.Resource
-	Snapshot *resources.Snapshot `json:"snapshot,omitempty"`
-}
-
-// ListResources devuelve los recursos de la sesión con su estado. El estado
-// sale del caché, así que el polling del frontend no se traduce uno a uno en
-// llamadas al sistema externo.
-func (m *Manager) ListResources(ctx context.Context, sessionID string) ([]*LinkedResource, error) {
-	if _, err := m.st.GetSession(sessionID); err != nil {
-		return nil, err
-	}
-	rows, err := m.st.ListResources(sessionID)
-	if err != nil {
-		return nil, err
-	}
-
-	out := make([]*LinkedResource, 0, len(rows))
-	for _, r := range rows {
-		lr := &LinkedResource{Resource: r}
-		if m.cfg.Resources != nil {
-			lr.Snapshot = m.cfg.Resources.Get(ctx, resources.Ref{
-				System: r.System, Type: r.Type, URL: r.Ref,
-			})
-		}
-		out = append(out, lr)
-	}
-	return out, nil
-}
-
-// AddResource linkea un recurso a la sesión.
-//
-// system y type se infieren del propio link: es mejor UX —pegás la URL y
-// listo— y es el seam que generaliza, porque sumar otro sistema es sumar un
-// provider al registry sin tocar este contrato. Se aceptan explícitos como
-// escape hatch para un formato que el registry todavía no conozca.
-func (m *Manager) AddResource(sessionID, rawURL, system, typ string) (*store.Resource, error) {
-	if _, err := m.st.GetSession(sessionID); err != nil {
-		return nil, err
-	}
-	rawURL = strings.TrimSpace(rawURL)
-	if rawURL == "" {
-		return nil, ErrUnknownResource
-	}
-
-	ref := resources.Ref{System: system, Type: typ, URL: rawURL}
-	if system == "" || typ == "" {
-		if m.cfg.Resources == nil {
-			return nil, ErrUnknownResource
-		}
-		resolved, ok := m.cfg.Resources.Resolve(rawURL)
-		if !ok {
-			return nil, ErrUnknownResource
-		}
-		ref = resolved
-	}
-
-	r := &store.Resource{
-		SessionID: sessionID, System: ref.System, Type: ref.Type, Ref: ref.URL,
-	}
-	if err := m.st.AddResource(r); err != nil {
-		return nil, err
-	}
-	log.Printf("[%s] recurso linkeado: %s", sessionID, r.Ref)
-	return r, nil
-}
-
-// DeleteResource desvincula el recurso de la sesión.
-func (m *Manager) DeleteResource(sessionID string, id int64) error {
-	if _, err := m.st.GetSession(sessionID); err != nil {
-		return err
-	}
-	return m.st.DeleteResource(sessionID, id)
-}
+// El manager en proceso es una implementación de ptyapi.Client igual que el
+// cliente del daemon. Esta línea es lo que hace que romper el contrato falle
+// al compilar y no en runtime.
+var _ ptyapi.Client = (*Manager)(nil)
