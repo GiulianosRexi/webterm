@@ -115,8 +115,29 @@ func NewManager(st *store.Store, cfg Config) *Manager {
 	}
 }
 
+// closing dice que este manager se está apagando.
+//
+// Es el propio canal stop y no un flag aparte: stop lo cierra Close() y nadie
+// más, así que ya ES la señal de "me estoy apagando", y duplicarla en un bool
+// sería dos fuentes de verdad para lo mismo. Lo lee reap para elegir el
+// exit_reason, y lo lee Spawn para rechazar con ErrClosed.
+//
+// Close cierra stop ANTES de matar los ptys, que es lo que hace que los reaps
+// que dispara esa matanza lo vean cerrado.
+func (m *Manager) closing() bool {
+	select {
+	case <-m.stop:
+		return true
+	default:
+		return false
+	}
+}
+
 // Close apaga el manager: mata las sesiones vivas y espera a que todas
 // terminen de reconciliarse.
+//
+// Las sesiones que se lleva puestas quedan marcadas daemon_restart, no killed:
+// ver el comentario del reap.
 //
 // Toma spawnMu, así que Close y Spawn son mutuamente excluyentes. Sin eso, un
 // Spawn que tomara m.mu después de la foto dejaría un pty que este Close no
@@ -170,10 +191,8 @@ func (m *Manager) Spawn(o ptyapi.SpawnOpts) error {
 	// enterarse de que no va a existir —la fila ya quedó insertada del otro
 	// lado— y tiene que poder hacerlo igual esté el daemon en este proceso o
 	// del otro lado de un socket.
-	select {
-	case <-m.stop:
+	if m.closing() {
 		return ptyapi.ErrClosed
-	default:
 	}
 
 	rec, err := m.st.GetSession(o.ID)
@@ -287,8 +306,27 @@ func (m *Manager) reap(l *liveSession) {
 	<-l.pumpDone
 	l.writer.close()
 
+	// El orden de las ramas importa: Close() prende killed en TODAS las
+	// sesiones antes de matarlas, así que preguntando por killed primero nunca
+	// se llegaría a daemon_restart y un `webterm daemon stop|restart` dejaría
+	// todo marcado killed. Y killed está documentado —README, tabla de
+	// exit_reason— como "lo mataste vos con POST /kill": con las dos cosas
+	// bajo el mismo motivo, la UI no puede distinguir un reinicio que pediste
+	// de una sesión que mataste a mano.
+	//
+	// El daño de confundirlas es del lado del reap y no del sweep: en este
+	// camino el sweep nunca llega a opinar, porque mgr.Close() espera todos los
+	// reaps antes de que el proceso termine. El reap gana siempre.
+	//
+	// Efecto de borde asumido: una sesión que justo termina sola mientras el
+	// daemon se apaga queda como daemon_restart en vez de normal. Es la
+	// etiqueta más útil de las dos —lo que el usuario quiere saber es que se
+	// reinició el daemon— y la ventana es de milisegundos.
 	reason := store.ReasonNormal
-	if l.killed.Load() {
+	switch {
+	case m.closing():
+		reason = store.ReasonDaemonRestart
+	case l.killed.Load():
 		reason = store.ReasonKilled
 	}
 	code := l.pty.ExitCode()

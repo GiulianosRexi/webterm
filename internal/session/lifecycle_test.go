@@ -112,6 +112,53 @@ func TestCloseMataTodo(t *testing.T) {
 	}
 }
 
+// Apagar el daemon no es lo mismo que matar una sesión a mano, y la fila tiene
+// que poder distinguirlo.
+//
+// Close prende killed en todas las sesiones para que el pty.Kill() no se
+// confunda con una muerte natural, y el reap leía ese mismo flag para elegir el
+// motivo: el resultado era que `webterm daemon stop|restart` dejaba todo en
+// exit_reason=killed, que el README define como "lo mataste vos con POST
+// /kill". La UI no podía distinguir un reinicio que pediste de un kill por
+// sesión.
+//
+// El sweep del orquestador no entra en este camino: Close espera todos los
+// reaps antes de que el proceso termine, así que el reap escribe primero y
+// gana.
+func TestCloseMarcaDaemonRestartYNoKilled(t *testing.T) {
+	m, st := newTestManager(t)
+	id := spawnTest(t, m, st, nil)
+
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	got, err := st.GetSession(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ExitReason != string(store.ReasonDaemonRestart) {
+		t.Fatalf("exit_reason = %q; apagar el daemon tiene que dar daemon_restart", got.ExitReason)
+	}
+}
+
+// Y la contracara, que es lo que le da sentido a la distinción: un kill pedido
+// por sesión sigue siendo killed.
+func TestKillPorSesionSigueSiendoKilled(t *testing.T) {
+	m, st := newTestManager(t)
+	id := spawnTest(t, m, st, nil)
+
+	if err := m.Kill(id); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.GetSession(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ExitReason != string(store.ReasonKilled) {
+		t.Fatalf("exit_reason = %q; quería killed", got.ExitReason)
+	}
+}
+
 // TestExtraEnvLlegaAlPty: el cliente MCP que corre adentro de la sesión saca el
 // token de su propio entorno, así que tiene que estar ahí. Las variables las
 // arma el orquestador y llegan resueltas en SpawnOpts: el dueño del pty no sabe

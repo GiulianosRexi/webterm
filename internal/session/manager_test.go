@@ -168,14 +168,17 @@ func TestSpawnConBannerLoDejaEnElHistorial(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	att, err := m.Attach(rec.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer att.Detach()
-	if !bytes.Contains(att.History(), []byte("MARCADOR-DE-REANUDACION")) {
-		t.Fatalf("el banner no está en el replay: %q", att.History())
-	}
+	// La aserción va contra session_output y no contra el ring.
+	//
+	// El ring vive en memoria del daemon: que el banner esté ahí solo prueba
+	// que el replay de un attach inmediato lo muestra. Lo que hace que el
+	// marcador sobreviva a un reinicio del orquestador —que es para lo que el
+	// banner existe— es la copia en la base, y esa es la mitad que hay que
+	// probar. Antes este test verificaba el ring, o sea la mitad que no importa.
+	waitFor(t, 15*time.Second, "el banner en session_output", func() bool {
+		hist, err := st.ReadOutput(rec.ID)
+		return err == nil && bytes.Contains(hist, []byte("MARCADOR-DE-REANUDACION"))
+	})
 }
 
 func TestAttachASesionNoVivaDaErrNotLive(t *testing.T) {
