@@ -10,15 +10,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/giuliano/webterm/internal/control"
 	webmcp "github.com/giuliano/webterm/internal/mcp"
 	"github.com/giuliano/webterm/internal/resources"
 	"github.com/giuliano/webterm/internal/session"
 	"github.com/giuliano/webterm/internal/store"
 )
 
-// newTestServer levanta el stack completo: store en un tmpdir, manager y
-// servidor HTTP. Sin mocks.
-func newTestServer(t *testing.T) (*httptest.Server, *session.Manager) {
+// newTestServer levanta el stack completo: store en un tmpdir, el manager de
+// ptys en proceso, el orquestador sobre él, y el servidor HTTP. Sin mocks.
+func newTestServer(t *testing.T) (*httptest.Server, *control.Manager) {
 	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "webterm.db"))
 	if err != nil {
@@ -26,8 +27,11 @@ func newTestServer(t *testing.T) (*httptest.Server, *session.Manager) {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 
-	mgr := session.NewManager(st, session.Config{
-		Shell: "/bin/bash", HistoryBytes: 1 << 20, SweepEvery: time.Hour,
+	pty := session.NewManager(st, session.Config{HistoryBytes: 1 << 20})
+	t.Cleanup(func() { _ = pty.Close() })
+
+	mgr := control.NewManager(st, pty, control.Config{
+		Shell: "/bin/bash", SweepEvery: time.Hour,
 		Resources: resources.NewCache(resources.NewRegistry(proveedorFalso{})),
 	})
 	if err := mgr.Start(); err != nil {

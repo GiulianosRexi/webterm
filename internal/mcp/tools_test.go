@@ -9,8 +9,8 @@ import (
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/giuliano/webterm/internal/control"
 	"github.com/giuliano/webterm/internal/resources"
-	"github.com/giuliano/webterm/internal/session"
 	"github.com/giuliano/webterm/internal/store"
 )
 
@@ -19,7 +19,7 @@ import (
 type sessionsFalsas struct {
 	existentes map[string]*store.Session
 	kv         map[string]map[string]string
-	links      []*session.LinkedResource
+	links      []*control.LinkedResource
 	errAdd     error
 }
 
@@ -73,7 +73,7 @@ func (f *sessionsFalsas) AddResource(id, rawURL, system, typ string) (*store.Res
 	return &store.Resource{ID: 1, SessionID: id, System: "gh", Type: "pr", Ref: rawURL}, nil
 }
 
-func (f *sessionsFalsas) ListResources(context.Context, string) ([]*session.LinkedResource, error) {
+func (f *sessionsFalsas) ListResources(context.Context, string) ([]*control.LinkedResource, error) {
 	return f.links, nil
 }
 
@@ -206,7 +206,7 @@ func TestLinkPR(t *testing.T) {
 
 func TestListLinks(t *testing.T) {
 	f := nuevasSesiones()
-	f.links = []*session.LinkedResource{{
+	f.links = []*control.LinkedResource{{
 		Resource: &store.Resource{ID: 1, Ref: "https://github.com/o/r/pull/7"},
 		Snapshot: &resources.Snapshot{PR: &resources.PRState{
 			Repo: "o/r", Number: 7, Title: "un fix", State: "OPEN",

@@ -10,7 +10,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/giuliano/webterm/internal/session"
+	"github.com/giuliano/webterm/internal/control"
 	"github.com/giuliano/webterm/internal/store"
 )
 
@@ -21,6 +21,18 @@ const (
 	pongTimeout = 60 * time.Second
 	// Timeout de escritura sobre el socket.
 	writeTimeout = 10 * time.Second
+	// maxClientMessage acota lo que aceptamos leer del browser en un solo
+	// frame. Mismo número y mismo motivo que internal/daemon/attach.go: sin
+	// límite, gorilla bufferiza sin tope. Pero acá hay una razón extra para
+	// que sea EXACTAMENTE el mismo número: att.Write reenvía el frame tal
+	// cual al daemon por el socket interno, que tiene su propio límite de 1
+	// MiB. Sin este límite acá, un paste grande del browser como un solo
+	// frame binario pasaría el upgrade de este socket para después reventar
+	// contra el límite del daemon, tumbando el attachment con un error
+	// confuso del lado equivocado. Cortando acá con el mismo tope, el browser
+	// ve un close inmediato y explicable en vez de una desconexión que
+	// parece un bug del daemon.
+	maxClientMessage = 1 << 20
 )
 
 // clientMsg es un mensaje de control del browser (los de texto; el input
@@ -84,6 +96,7 @@ func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 		att.Detach()
 		_ = conn.Close()
 	}()
+	conn.SetReadLimit(maxClientMessage)
 
 	c := &wsClient{conn: conn}
 	done := make(chan struct{})
@@ -104,22 +117,30 @@ func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !att.Live {
-		// Sesión muerta: se ve el historial y nada más. El input se descarta.
-		_ = c.writeJSON(exitMsg{
-			Type: "exit", Code: derefInt(att.Session.ExitCode), Reason: att.Session.ExitReason,
-		})
+		// Sin proceso corriendo. Ojo: esto NO es sinónimo de "terminó". Una
+		// fila en starting —el orquestador se cayó entre el insert y el
+		// spawn— también llega acá con Live=false pero sin haber salido
+		// nunca, así que ramificamos por att.End().Exited y no por !att.Live
+		// para decidir si corresponde un exit. Mandar exit{code:0} sobre una
+		// sesión que nunca corrió sería mentirle a la UI.
+		if end := att.End(); end.Exited {
+			_ = c.writeJSON(exitMsg{
+				Type: "exit", Code: derefInt(end.Session.ExitCode), Reason: end.Session.ExitReason,
+			})
+		}
+		// Se ve el historial y nada más. El input se descarta.
 		drainUntilClose(conn)
 		return
 	}
 
 	// pty -> browser
 	go func() {
-		for chunk := range att.Output {
+		for chunk := range att.Output() {
 			if err := c.write(websocket.BinaryMessage, chunk); err != nil {
 				break
 			}
 		}
-		s.closeAfterStream(c, att, id)
+		s.closeAfterStream(c, att)
 		// Cerrar el socket destraba el ReadMessage del loop de abajo.
 		_ = conn.Close()
 	}()
@@ -138,33 +159,50 @@ func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 		if typ == websocket.TextMessage && len(data) > 0 && data[0] == '{' {
 			var msg clientMsg
 			if err := json.Unmarshal(data, &msg); err == nil && msg.Type == "resize" {
-				if err := s.mgr.Resize(id, msg.Rows, msg.Cols); err != nil {
+				// Write y Resize pasan por el attachment: en el camino remoto
+				// viajan por el mismo socket que el output, así que son parte
+				// de la conexión y no operaciones sueltas del manager.
+				if err := att.Resize(msg.Rows, msg.Cols); err != nil {
 					log.Printf("[%s] resize falló: %v", id, err)
 				}
 				continue
 			}
 		}
-		if err := s.mgr.Write(id, data); err != nil {
+		if err := att.Write(data); err != nil {
 			log.Printf("[%s] write al pty falló: %v", id, err)
 		}
 	}
 }
 
-// closeAfterStream explica por qué se cortó el stream: o al cliente lo
-// expulsamos por lento, o la sesión terminó.
-func (s *Server) closeAfterStream(c *wsClient, att *session.Attachment, id string) {
-	if att.Dropped() {
+// closeAfterStream explica por qué se cortó el stream vivo.
+//
+// No puede confiar en Dropped(): el frame `dropped` que manda el daemon es
+// best-effort, y si el cliente dejó de leer del todo la escritura del daemon
+// se traba, gorilla envenena la conexión y ese frame nunca sale —justo en el
+// caso que más nos importaría reportar—. Ver el comentario largo en
+// internal/daemon/attach.go y en control.Attachment.End().
+//
+// La señal autoritativa es la fila, que End() ya resolvió en tres ramas
+// excluyentes: no la reinterpretamos acá, solo elegimos qué decirle al
+// browser en cada una. Exited tiene prioridad sobre Dropped a propósito: si
+// la sesión terminó, eso es lo que le importa al usuario, haya habido o no
+// expulsión de por medio.
+func (s *Server) closeAfterStream(c *wsClient, att *control.Attachment) {
+	end := att.End()
+	switch {
+	case end.Err != nil:
+		// No se pudo leer la fila: no sabemos qué pasó, así que no inventamos
+		// ni una expulsión ni una salida. El cliente ve nada más que el cierre
+		// del socket.
+	case end.Session == nil:
+		// La fila se borró mientras el cliente miraba. No hay nada que
+		// explicar contra un id que ya no existe.
+	case end.Exited:
+		_ = c.writeJSON(exitMsg{Type: "exit", Code: derefInt(end.Session.ExitCode), Reason: end.Session.ExitReason})
+	case end.Dropped:
 		_ = c.writeJSON(map[string]string{
 			"type": "error", "error": "cliente demasiado lento; volvé a conectar",
 		})
-		return
-	}
-	rec, err := s.mgr.Get(id)
-	if err != nil {
-		return
-	}
-	if rec.PtyStatus == store.StatusExited {
-		_ = c.writeJSON(exitMsg{Type: "exit", Code: derefInt(rec.ExitCode), Reason: rec.ExitReason})
 	}
 }
 

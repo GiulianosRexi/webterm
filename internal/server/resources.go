@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/giuliano/webterm/internal/session"
+	"github.com/giuliano/webterm/internal/control"
 	"github.com/giuliano/webterm/internal/store"
 )
 
@@ -57,7 +57,7 @@ func (s *Server) handleUnlinkResource(w http.ResponseWriter, r *http.Request) {
 // de recursos.
 func writeResourceError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, session.ErrUnknownResource):
+	case errors.Is(err, control.ErrUnknownResource):
 		writeErrorMsg(w, http.StatusBadRequest, "no se reconoce esa URL; por ahora solo PRs de GitHub")
 	case errors.Is(err, store.ErrDuplicate):
 		writeErrorMsg(w, http.StatusConflict, "ese recurso ya está linkeado a la sesión")

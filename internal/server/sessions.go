@@ -7,7 +7,8 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/giuliano/webterm/internal/session"
+	"github.com/giuliano/webterm/internal/control"
+	"github.com/giuliano/webterm/internal/ptyapi"
 	"github.com/giuliano/webterm/internal/store"
 )
 
@@ -39,10 +40,15 @@ func writeError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		writeErrorMsg(w, http.StatusNotFound, "no existe")
-	case errors.Is(err, session.ErrAlreadyRunning):
+	case errors.Is(err, control.ErrAlreadyRunning):
 		writeErrorMsg(w, http.StatusConflict, "la sesión ya está corriendo")
-	case errors.Is(err, session.ErrNotLive):
+	case errors.Is(err, ptyapi.ErrNotLive):
 		writeErrorMsg(w, http.StatusConflict, "la sesión no está corriendo")
+	case errors.Is(err, ptyapi.ErrClosed):
+		// 503 y no 500: el dueño de los ptys se está apagando, no que algo
+		// esté roto. Reintentar contra el daemon que vuelve es razonable, a
+		// diferencia de los otros tres casos de este switch.
+		writeErrorMsg(w, http.StatusServiceUnavailable, "el daemon de sesiones se está apagando")
 	default:
 		writeErrorMsg(w, http.StatusInternalServerError, err.Error())
 	}
@@ -88,7 +94,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		writeErrorMsg(w, http.StatusBadRequest, "body inválido")
 		return
 	}
-	rec, err := s.mgr.Create(session.CreateOpts{
+	rec, err := s.mgr.Create(control.CreateOpts{
 		Title: req.Title, Description: req.Description, Cwd: req.Cwd,
 		Cols: req.Cols, Rows: req.Rows,
 	})

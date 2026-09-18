@@ -12,7 +12,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/giuliano/webterm/internal/session"
+	"github.com/giuliano/webterm/internal/control"
 )
 
 // Config parametriza el servidor.
@@ -27,12 +27,12 @@ type Config struct {
 // Server sirve la UI y las sesiones de terminal.
 type Server struct {
 	cfg      Config
-	mgr      *session.Manager
+	mgr      *control.Manager
 	upgrader websocket.Upgrader
 }
 
 // New construye el servidor sobre un manager de sesiones ya arrancado.
-func New(cfg Config, mgr *session.Manager) *Server {
+func New(cfg Config, mgr *control.Manager) *Server {
 	return &Server{
 		cfg: cfg,
 		mgr: mgr,
