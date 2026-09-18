@@ -155,8 +155,10 @@ func TestLiveIDsYKill(t *testing.T) {
 	}
 }
 
-// Los cuatro errores del contrato tienen que sobrevivir el viaje por el
-// socket: el orquestador reacciona distinto a cada uno.
+// Tres de los cuatro errores del contrato tienen que sobrevivir el viaje por
+// el socket: el orquestador reacciona distinto a cada uno. El cuarto,
+// ErrClosed, lo prueba aparte TestErrClosedViaja porque necesita un manager
+// cerrado ANTES de levantar el servidor, y no encaja en newPair.
 func TestLosErroresDelContratoViajan(t *testing.T) {
 	cl, st := newPair(t)
 
@@ -215,6 +217,48 @@ func TestOutputSeCierraAlMorir(t *testing.T) {
 	case <-cerrado:
 	case <-time.After(5 * time.Second):
 		t.Fatal("el canal de output no se cerró al morir la sesión")
+	}
+}
+
+// El cuarto error del contrato: ErrClosed viaja como 503 cuando el dueño de
+// los ptys se está apagando. Se arma el daemon a mano en vez de usar newPair
+// porque hace falta cerrar el manager ANTES de levantar el server (newPair
+// deja el Close para el t.Cleanup, que corre al final del test).
+func TestErrClosedViaja(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	rec := filaNueva(t, st)
+
+	m := session.NewManager(st, session.Config{})
+	// Close deja al manager en el estado "apagándose": Spawn lo detecta y
+	// devuelve ErrClosed antes de tocar nada más.
+	if err := m.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := daemon.NewServer(m)
+	sock := filepath.Join(dir, "d2.sock")
+	go func() { _ = srv.Serve(sock) }()
+	defer func() { _ = srv.Shutdown(context.Background()) }()
+
+	for i := 0; i < 200; i++ {
+		if c, err := net.Dial("unix", sock); err == nil {
+			_ = c.Close()
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	cl := New(sock)
+	defer cl.Close()
+
+	err = cl.Spawn(ptyapi.SpawnOpts{ID: rec.ID, Shell: rec.Shell, Cwd: rec.Cwd, Cols: 80, Rows: 24})
+	if !errors.Is(err, ptyapi.ErrClosed) {
+		t.Fatalf("spawn con el dueño de los ptys apagándose dio %v; quería ErrClosed", err)
 	}
 }
 

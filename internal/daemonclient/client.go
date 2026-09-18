@@ -13,6 +13,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 
 	"github.com/gorilla/websocket"
 
@@ -37,6 +38,10 @@ type Client struct {
 	dialer *websocket.Dialer
 }
 
+// New arma un cliente contra el socket Unix de un daemon.
+//
+// No dialea todavía: New nunca falla por un daemon ausente, eso lo cuenta la
+// primera llamada real (o Check, si es lo único que se quiere saber).
 func New(socketPath string) *Client {
 	dial := func(ctx context.Context, _, _ string) (net.Conn, error) {
 		var d net.Dialer
@@ -62,6 +67,7 @@ func (c *Client) Info() (daemon.Info, error) {
 	}
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
+		drainBody(res)
 		return info, fmt.Errorf("el daemon contestó %d a /info", res.StatusCode)
 	}
 	if err := json.NewDecoder(res.Body).Decode(&info); err != nil {
@@ -99,7 +105,7 @@ func (c *Client) Spawn(o ptyapi.SpawnOpts) error {
 }
 
 func (c *Client) Kill(id string) error {
-	res, err := c.http.Post(baseURL+"/sessions/"+id+"/kill", "application/json", nil)
+	res, err := c.http.Post(baseURL+"/sessions/"+url.PathEscape(id)+"/kill", "application/json", nil)
 	if err != nil {
 		return fmt.Errorf("matando %s: %w", id, err)
 	}
@@ -138,22 +144,41 @@ func (c *Client) Close() error {
 // 503 de ptyapi.ErrClosed (el dueño de los ptys se está apagando). La tabla
 // completa —y el porqué de cada status— vive documentada en ptyapi.go; este
 // switch es solo su reflejo en el lado cliente, no una fuente aparte.
+//
+// Cada rama de error drena el body antes de volver: son las únicas ramas
+// donde el llamador no lo va a leer él mismo (compará con LiveIDs, que decodifica
+// el body solo cuando esto devuelve nil), y un body sin drenar antes de
+// Close() hace que net/http descarte la conexión en vez de reusarla.
 func statusError(res *http.Response) error {
 	switch res.StatusCode {
 	case http.StatusOK, http.StatusNoContent:
 		return nil
 	case http.StatusNotFound:
+		drainBody(res)
 		return store.ErrNotFound
 	case http.StatusGone:
+		drainBody(res)
 		return ptyapi.ErrNotLive
 	case http.StatusConflict:
+		drainBody(res)
 		return ptyapi.ErrAlreadyLive
 	case http.StatusServiceUnavailable:
+		drainBody(res)
 		return ptyapi.ErrClosed
 	default:
 		msg, _ := io.ReadAll(io.LimitReader(res.Body, 4<<10))
+		drainBody(res)
 		return fmt.Errorf("el daemon contestó %d: %s", res.StatusCode, bytes.TrimSpace(msg))
 	}
+}
+
+// drainBody consume lo que quede del cuerpo de una respuesta de error. El
+// llamador igual hace defer res.Body.Close(), pero net/http solo reutiliza la
+// conexión (acá, el socket Unix del daemon) si el body se leyó hasta EOF antes
+// de cerrarlo; si no, el transport la descarta y abre una nueva en la
+// siguiente llamada.
+func drainBody(res *http.Response) {
+	_, _ = io.Copy(io.Discard, res.Body)
 }
 
 var _ ptyapi.Client = (*Client)(nil)
