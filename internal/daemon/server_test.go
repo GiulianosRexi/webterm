@@ -170,6 +170,36 @@ func TestKillDevuelve204YDespues410(t *testing.T) {
 	}
 }
 
+// ptyapi.ErrClosed es el caso que sumó el contrato después de escrito el plan
+// original de esta tarea, y por eso es el que más necesitaba su propio test:
+// los otros tres (404/410/409) ya venían cubiertos arriba.
+func TestSpawnConElDuenioDeLosPtysApagandoseDa503(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	rec := nuevaFila(t, st)
+
+	m := session.NewManager(st, session.Config{})
+	// Close deja al manager en el estado "apagándose": Spawn lo detecta contra
+	// m.stop y devuelve ErrClosed antes de tocar nada más.
+	if err := m.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := httptest.NewServer(NewServer(m).Handler())
+	defer srv.Close()
+
+	res := postJSON(t, srv.URL+"/sessions", ptyapi.SpawnOpts{
+		ID: rec.ID, Shell: rec.Shell, Cwd: rec.Cwd, Cols: 80, Rows: 24,
+	})
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("spawn contra un manager cerrado dio %d; quería 503", res.StatusCode)
+	}
+}
+
 // El daemon escucha en un socket Unix, no en un puerto: nadie de la red puede
 // llegarle, y por eso no hay token en esta capa.
 // El nombre es corto a propósito, no por estilo: t.TempDir() arma el path del
