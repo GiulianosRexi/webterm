@@ -250,3 +250,25 @@ func TestHealthCuentaSesiones(t *testing.T) {
 		t.Fatalf("sessions = %d: %s", h.Sessions, body)
 	}
 }
+
+// TestRutaDeAPIDesconocidaDa404: sin esto, cualquier ruta /api/ que no exista
+// cae en el fallback de la SPA y devuelve index.html con un 200. El cliente
+// entonces falla parseando HTML como JSON, y el error que ve el usuario no
+// tiene nada que ver con la causa —que es simplemente que la ruta no está.
+func TestRutaDeAPIDesconocidaDa404(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	for _, path := range []string{
+		"/api/no-existe",
+		"/api/sessions/abc/inventado",
+		"/ws/inventado",
+	} {
+		status, body := do(t, srv, "GET", path, "")
+		if status != http.StatusNotFound {
+			t.Errorf("%s = %d, se esperaba 404 (body: %.60s)", path, status, body)
+		}
+		if !bytes.Contains(body, []byte(`"error"`)) {
+			t.Errorf("%s no devolvió un error JSON: %.60s", path, body)
+		}
+	}
+}

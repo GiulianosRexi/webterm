@@ -65,6 +65,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/sessions/{id}/resources/{rid}", s.handleUnlinkResource)
 
 	mux.HandleFunc("/ws/terminal", s.handleTerminal)
+
+	// Catch-all de /api/ y /ws/: sin esto, una ruta de API que no existe cae
+	// en el fallback de la SPA y devuelve index.html con un 200. El cliente
+	// falla entonces parseando HTML como JSON, y el error que se ve no tiene
+	// nada que ver con la causa real. Los patrones más específicos de arriba
+	// tienen precedencia, así que esto solo agarra lo que no matcheó nada.
+	mux.HandleFunc("/api/", s.handleUnknownAPI)
+	mux.HandleFunc("/ws/", s.handleUnknownAPI)
+
 	mux.Handle("/", s.staticHandler())
 	return s.withAuth(mux)
 }
@@ -124,6 +133,11 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 		"auth":     s.cfg.Token != "",
 		"sessions": live,
 	})
+}
+
+// handleUnknownAPI responde 404 en JSON para rutas de API inexistentes.
+func (s *Server) handleUnknownAPI(w http.ResponseWriter, r *http.Request) {
+	writeErrorMsg(w, http.StatusNotFound, "ruta desconocida: "+r.URL.Path)
 }
 
 // staticHandler sirve el build de Vite, con fallback a index.html para que
