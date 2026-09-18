@@ -254,9 +254,15 @@ el spawn falla la marca `exited`/`spawn_failed` y devuelve error. El orden
 importa: la fila tiene que existir antes, porque `session_output` tiene FK
 contra ella.
 
-`starting` es un estado nuevo (migración chica; el mecanismo existe desde M2).
-La UI lo muestra como "arrancando", y una fila trabada en `starting` sin sesión
-viva la levanta el sweep como cualquier otra.
+`starting` es un estado nuevo, pero **no necesita migración**: `pty_status` es
+un `TEXT` sin `CHECK`, así que alcanza con la constante nueva en Go. La UI lo
+muestra como "arrancando".
+
+Lo que sí hay que cambiar es el sweep. Hoy se alimenta de `RunningIDs()`, que
+filtra `pty_status = 'running'`; una fila trabada en `starting` —porque el
+orquestador crasheó entre el insert y el spawn— no la levantaría nadie y
+quedaría así para siempre. Pasa a ser `ActiveIDs()`, que cubre `running` y
+`starting`.
 
 El `env` lo arma el orquestador —`WEBTERM_TOKEN` hoy, lo que venga mañana— y el
 daemon lo pega tal cual sobre `TERM`, `COLORTERM` y `WEBTERM_SESSION_ID`. Así
@@ -329,7 +335,12 @@ No es un extra: sin esto, M10 rompe M9.
 ## Flujo de desarrollo
 
 `make run` y `make dev` levantan el daemon si no está y siguen siendo un
-comando. `webterm daemon restart` es el acto explícito que mata las sesiones.
+comando, pero **dejan de usar `go run`**. El orquestador spawnea el daemon
+ejecutando `os.Executable()`, y con `go run` ese path es un binario temporal
+que se borra al salir: el daemon sobreviviría (el inode sigue vivo mientras el
+proceso lo tenga abierto) pero un `daemon restart` posterior apuntaría a un
+archivo que ya no existe. Los targets pasan a `go build -o bin/webterm` y
+correr el binario. `webterm daemon restart` es el acto explícito que mata las sesiones.
 
 Para desarrollar sobre webterm sin tocar el webterm real, una instancia
 separada: `-addr 127.0.0.1:7789 -db ~/.webterm/dev.db`, que por las rutas
