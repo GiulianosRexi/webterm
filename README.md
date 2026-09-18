@@ -13,7 +13,8 @@ El diseño completo y el roadmap por milestones están en
       resize, true color, mouse.
 - [x] **M2** — persistencia de sesiones (SQLite + session manager) y ABM.
 - [x] **M8** — recursos externos linkeados a una sesión (PRs de GitHub).
-- [ ] **M3** — UI multi-terminal (tabs). ← próximo
+- [ ] **M9** — servidor MCP para que Claude escriba en su sesión. ← próximo
+- [ ] **M3** — UI multi-terminal (tabs).
 - [ ] **M4** — folders.
 - [ ] **M5** — CLI local `webterm`.
 - [ ] **M6** — integración con Claude Code (hooks).

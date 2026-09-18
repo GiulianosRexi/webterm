@@ -287,3 +287,30 @@ remote de git y la branch, y de ahí el PR abierto. Sería lo que convierte la
 feature en algo que no hay que mantener a mano, pero se deja para después: el
 modelo de datos tiene que soportarlo sin cambios, nada más. Con el CLI de M5,
 `webterm link pr` desde adentro de la sesión es la versión barata de lo mismo.
+
+### M9 — Servidor MCP
+
+**Próximo a implementar.**
+
+El backend expone un servidor MCP para que Claude, corriendo dentro de una
+sesión, le escriba contexto a esa sesión y le linkee PRs sin salir de ahí.
+
+Hoy `title`, `description`, el KV (M2) y los recursos linkeados (M8) se llenan a
+mano desde la UI. Con MCP los llena el agente que está haciendo el trabajo, que
+es el que sabe de qué se trata.
+
+**No es lógica nueva.** Las operaciones ya existen en el manager desde M2 y M8;
+MCP es un tercer adaptador de protocolo sobre lo mismo, al lado del REST y del
+WebSocket.
+
+- **Transporte:** HTTP en `/mcp`, modo `Stateless`, con el SDK oficial de Go.
+- **Identidad de sesión:** el header `X-Webterm-Session`, que Claude Code llena
+  expandiendo `${WEBTERM_SESSION_ID}` —la variable que el pty ya recibe desde
+  M1— en cada request.
+- **Auth:** el token de siempre, ahora también por `Authorization: Bearer`. Para
+  que esté disponible adentro de la sesión se inyecta `WEBTERM_TOKEN` al pty.
+- **Tools:** `set_context`, `get_context`, `set_title`, `link_pr`, `list_links`.
+  Ninguna borra nada: deslinkear y borrar siguen siendo decisiones humanas.
+
+El diseño detallado está en
+`docs/superpowers/specs/2026-09-18-m9-servidor-mcp-design.md`.
