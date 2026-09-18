@@ -53,4 +53,46 @@ export const api = {
     }),
   remove: (id: string) => req<void>(`/api/sessions/${id}`, { method: 'DELETE' }),
   health: () => req<{ status: string; auth: boolean; sessions: number }>('/api/health'),
+  resources: {
+    list: (sessionId: string) =>
+      req<LinkedResource[]>(`/api/sessions/${sessionId}/resources`),
+    link: (sessionId: string, ref: string) =>
+      req<LinkedResource>(`/api/sessions/${sessionId}/resources`, {
+        method: 'POST',
+        body: JSON.stringify({ ref }),
+      }),
+    unlink: (sessionId: string, id: number) =>
+      req<void>(`/api/sessions/${sessionId}/resources/${id}`, { method: 'DELETE' }),
+  },
+}
+
+export interface PRState {
+  number: number
+  title: string
+  author: string
+  state: 'OPEN' | 'CLOSED' | 'MERGED'
+  is_draft: boolean
+  mergeable: string
+  review_decision: string
+  unresolved_count: number
+  threads_truncated: boolean
+  checks_state: string
+  checks_total: number
+  checks_failing: number
+}
+
+export interface Snapshot {
+  fetched_at: number
+  error?: string
+  pr?: PRState
+}
+
+export interface LinkedResource {
+  id: number
+  session_id: string
+  system: string
+  type: string
+  ref: string
+  created_at: number
+  snapshot?: Snapshot
 }

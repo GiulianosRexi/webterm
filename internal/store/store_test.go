@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"path/filepath"
 	"testing"
 )
@@ -75,5 +76,68 @@ func TestForeignKeysActivas(t *testing.T) {
 	}
 	if on != 1 {
 		t.Fatal("foreign_keys está apagado")
+	}
+}
+
+// TestMigracionSobreBaseV1: una base que quedó en v1 —la que ya tenías
+// corriendo antes de M8— se migra sin perder nada. Es el caso que se rompe en
+// silencio si una migración nueva está mal escrita.
+func TestMigracionSobreBaseV1(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v1.db")
+
+	// Armamos a mano una base en v1, como la dejaría la versión anterior.
+	raw, err := sql.Open("sqlite", path+"?_pragma=foreign_keys(ON)")
+	if err != nil {
+		t.Fatalf("abriendo: %v", err)
+	}
+	if _, err := raw.Exec(`CREATE TABLE schema_version (version INTEGER PRIMARY KEY)`); err != nil {
+		t.Fatalf("schema_version: %v", err)
+	}
+	if _, err := raw.Exec(schemaV1); err != nil {
+		t.Fatalf("schemaV1: %v", err)
+	}
+	if _, err := raw.Exec(`INSERT INTO schema_version (version) VALUES (1)`); err != nil {
+		t.Fatalf("marcando v1: %v", err)
+	}
+	if _, err := raw.Exec(`
+		INSERT INTO sessions (id, title, description, cwd, shell, cols, rows,
+			pty_status, work_status, kanban_status, created_at, last_active_at)
+		VALUES ('vieja', 'de antes', '', '/tmp', '/bin/bash', 80, 24,
+			'exited', 'idle', 'todo', 1, 1)`); err != nil {
+		t.Fatalf("sesión previa: %v", err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatalf("cerrando: %v", err)
+	}
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open sobre una base v1: %v", err)
+	}
+	defer st.Close()
+
+	var v int
+	if err := st.DB().QueryRow(`SELECT MAX(version) FROM schema_version`).Scan(&v); err != nil {
+		t.Fatalf("leyendo versión: %v", err)
+	}
+	if v != len(migrations) {
+		t.Fatalf("quedó en v%d, se esperaba v%d", v, len(migrations))
+	}
+
+	// Los datos de antes siguen ahí.
+	got, err := st.GetSession("vieja")
+	if err != nil {
+		t.Fatalf("la sesión previa no sobrevivió: %v", err)
+	}
+	if got.Title != "de antes" {
+		t.Fatalf("se corrompió la fila: %+v", got)
+	}
+
+	// Y la tabla nueva quedó usable.
+	if err := st.AddResource(&Resource{
+		SessionID: "vieja", System: "gh", Type: "pr",
+		Ref: "https://github.com/o/r/pull/1",
+	}); err != nil {
+		t.Fatalf("la tabla nueva no quedó usable: %v", err)
 	}
 }

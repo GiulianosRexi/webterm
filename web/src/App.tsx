@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { TerminalView, type ConnState } from './TerminalView'
 import { SessionList } from './SessionList'
+import { ResourcePanel } from './ResourcePanel'
 import { api, type Session } from './api'
 
 const label: Record<ConnState, string> = {
@@ -126,9 +127,12 @@ export function App() {
         />
         <main className="main">
           {selected ? (
-            // key fuerza un remount al cambiar de sesión: cada una tiene su
-            // propio xterm y su propio socket.
-            <TerminalView key={selected} sessionId={selected} onState={setState} />
+            <>
+              <ResourcePanel key={'res-' + selected} sessionId={selected} />
+              {/* key fuerza un remount al cambiar de sesión: cada una tiene su
+                  propio xterm y su propio socket. */}
+              <TerminalView key={selected} sessionId={selected} onState={setState} />
+            </>
           ) : (
             <div className="placeholder">
               No hay ninguna sesión abierta. Creá una con <b>+ Nueva</b>.

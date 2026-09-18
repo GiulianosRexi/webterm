@@ -60,6 +60,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/sessions/{id}/kv/{key}", s.handleSetKV)
 	mux.HandleFunc("DELETE /api/sessions/{id}/kv/{key}", s.handleDeleteKV)
 
+	mux.HandleFunc("GET /api/sessions/{id}/resources", s.handleListResources)
+	mux.HandleFunc("POST /api/sessions/{id}/resources", s.handleLinkResource)
+	mux.HandleFunc("DELETE /api/sessions/{id}/resources/{rid}", s.handleUnlinkResource)
+
 	mux.HandleFunc("/ws/terminal", s.handleTerminal)
 	mux.Handle("/", s.staticHandler())
 	return s.withAuth(mux)

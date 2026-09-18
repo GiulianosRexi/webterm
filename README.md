@@ -7,13 +7,13 @@ una UI web. Backend en Go (pty real vía `creack/pty`), frontend React plano con
 El diseño completo y el roadmap por milestones están en
 [`webterm-diseno.md`](./webterm-diseno.md).
 
-## Estado: M2
+## Estado: M8
 
 - [x] **M1** — terminal web básica: un pty por conexión WebSocket, input/output,
       resize, true color, mouse.
 - [x] **M2** — persistencia de sesiones (SQLite + session manager) y ABM.
-- [ ] **M8** — recursos externos linkeados a una sesión (PRs de GitHub). ← próximo
-- [ ] **M3** — UI multi-terminal (tabs).
+- [x] **M8** — recursos externos linkeados a una sesión (PRs de GitHub).
+- [ ] **M3** — UI multi-terminal (tabs). ← próximo
 - [ ] **M4** — folders.
 - [ ] **M5** — CLI local `webterm`.
 - [ ] **M6** — integración con Claude Code (hooks).
@@ -115,7 +115,8 @@ sigue viva y que al reattachear llega el replay con lo de antes.
 
 ```
 cmd/webterm/          entrypoint y flags
-internal/store/       SQLite: sesiones, KV e historial de output
+internal/store/       SQLite: sesiones, KV, historial de output y recursos
+internal/resources/   providers de sistemas externos (GitHub), caché con TTL
 internal/session/     session manager: ptys vivos, fan-out, reconciliación
 internal/server/      HTTP, static file server, API REST, WebSocket
 internal/terminal/    wrapper del pty (spawn, read/write, resize, wait)
@@ -153,12 +154,36 @@ historial, y deja un marcador `— sesión reanudada —` en el stream.
 | `GET` | `/api/sessions/{id}/kv` | contexto persistido de la sesión |
 | `PUT` | `/api/sessions/{id}/kv/{key}` | setea una clave (el body es el valor crudo) |
 | `DELETE` | `/api/sessions/{id}/kv/{key}` | borra una clave |
+| `GET` | `/api/sessions/{id}/resources` | recursos linkeados, con su estado |
+| `POST` | `/api/sessions/{id}/resources` | linkea: `{"ref":"https://github.com/o/r/pull/1"}` |
+| `DELETE` | `/api/sessions/{id}/resources/{rid}` | deslinkea |
 
 `kill` y `DELETE` están separados a propósito: matar el proceso no tiene por
 qué llevarse el historial.
 
 El KV ya está expuesto aunque la UI todavía no lo use: es la superficie exacta
 que va a consumir `webterm set/get state` en M5.
+
+## Recursos linkeados
+
+Una sesión puede tener colgados recursos externos. Por ahora, PRs de GitHub: se
+pega la URL en el panel **Linkeado** y la card muestra estado, review, checks y
+comments sin resolver, refrescados mientras el panel está abierto.
+
+El estado sale del `gh` CLI, así que hay que tenerlo instalado y autenticado
+(`gh auth login`). Sin él, linkear sigue funcionando y la card explica qué
+falta.
+
+Se consulta por GraphQL y no por REST por un motivo concreto: **la cuenta de
+comments sin resolver no existe en la API REST**. Una sola query trae estado,
+review, checks y threads.
+
+El estado nunca se persiste: es un caché en memoria con TTL de 30 s. N clientes
+mirando el mismo PR cuestan una sola llamada a GitHub, y los datos con más de
+un minuto se muestran con su edad.
+
+Sumar otro sistema —Linear, Slack— es sumar un provider en
+`internal/resources`, sin tocar el modelo de datos ni el contrato de la API.
 
 ## Protocolo WebSocket (`/ws/terminal?session_id=…`)
 
