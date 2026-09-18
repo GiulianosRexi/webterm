@@ -229,3 +229,126 @@ button:hover,
   color: var(--fg-dim);
   font-size: 13px;
 }
+
+.resources {
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-chrome);
+}
+
+.resources-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  border: 0;
+  border-radius: 0;
+  padding: 6px 12px;
+  color: var(--fg-dim);
+  font-size: 12px;
+  text-align: left;
+}
+
+.resources-head:hover { color: var(--fg); }
+.resources-head .caret { width: 10px; }
+
+.resources-head .count {
+  background: var(--border);
+  border-radius: 8px;
+  padding: 0 6px;
+  font-size: 11px;
+}
+
+.resources-body {
+  padding: 4px 12px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+.link-form { display: flex; gap: 6px; }
+
+.link-form input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+
+.resource-card {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+.resource-card header {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.resource-card header a {
+  flex: 1 1 auto;
+  color: var(--fg);
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.resource-card header a:hover { text-decoration: underline; }
+
+.badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0 0;
+}
+
+.badge {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1px 8px;
+  font-size: 11px;
+  color: var(--fg-dim);
+}
+
+.badge[data-value="OPEN"],
+.badge[data-value="MERGED"],
+.badge[data-value="APPROVED"],
+.badge[data-value="SUCCESS"],
+.badge[data-value="clean"] { border-color: var(--accent); color: var(--accent); }
+
+.badge[data-value="CHANGES_REQUESTED"],
+.badge[data-value="FAILURE"],
+.badge[data-value="threads"] { border-color: var(--danger); color: var(--danger); }
+
+.badge[data-value="PENDING"],
+.badge[data-value="DRAFT"],
+.badge[data-value="REVIEW_REQUIRED"] { border-color: var(--warn); color: var(--warn); }
+
+.resource-error {
+  margin: 6px 0 0;
+  color: var(--danger);
+  font-size: 11px;
+}
+
+.stale {
+  margin: 6px 0 0;
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+
+.resources .empty {
+  margin: 4px 0;
+  color: var(--fg-dim);
+  font-size: 12px;
+}
