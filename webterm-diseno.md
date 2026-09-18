@@ -290,7 +290,7 @@ modelo de datos tiene que soportarlo sin cambios, nada más. Con el CLI de M5,
 
 ### M9 — Servidor MCP
 
-**Próximo a implementar.**
+**Hecho.**
 
 El backend expone un servidor MCP para que Claude, corriendo dentro de una
 sesión, le escriba contexto a esa sesión y le linkee PRs sin salir de ahí.

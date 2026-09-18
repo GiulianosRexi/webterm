@@ -20,6 +20,8 @@ type Config struct {
 	Addr      string // dirección de escucha, ej. "127.0.0.1:7788"
 	StaticDir string // carpeta con el build del frontend (web/dist)
 	Token     string // token requerido en cada request; vacío = sin auth
+	// MCP es el handler del servidor MCP. Si es nil, /mcp no se monta.
+	MCP http.Handler
 }
 
 // Server sirve la UI y las sesiones de terminal.
@@ -65,6 +67,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/sessions/{id}/resources/{rid}", s.handleUnlinkResource)
 
 	mux.HandleFunc("/ws/terminal", s.handleTerminal)
+
+	// El servidor MCP se monta adentro de withAuth como todo lo demás: sin
+	// eso, al levantar con run-lan cualquiera en la red podría leer y escribir
+	// el contexto de las sesiones sin token.
+	if s.cfg.MCP != nil {
+		mux.Handle("/mcp", s.cfg.MCP)
+		mux.Handle("/mcp/", s.cfg.MCP)
+	}
 
 	// Catch-all de /api/ y /ws/: sin esto, una ruta de API que no existe cae
 	// en el fallback de la SPA y devuelve index.html con un 200. El cliente

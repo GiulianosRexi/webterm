@@ -3,6 +3,7 @@ package session
 import (
 	"bytes"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -203,4 +204,44 @@ func TestCloseMataTodo(t *testing.T) {
 	if err := m.Close(); err != nil {
 		t.Fatalf("Close dos veces: %v", err)
 	}
+}
+
+// TestExtraEnvLlegaAlPty: el cliente MCP que corre adentro de la sesión saca el
+// token de su propio entorno, así que tiene que estar ahí.
+func TestExtraEnvLlegaAlPty(t *testing.T) {
+	st := newTestStore(t)
+	m := NewManager(st, Config{
+		Shell: "/bin/bash", HistoryBytes: 1 << 20, SweepEvery: time.Hour,
+		ExtraEnv: []string{"WEBTERM_TOKEN=un-token-de-prueba"},
+	})
+	if err := m.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
+
+	rec, err := m.Create(CreateOpts{Cwd: "/tmp", Cols: 80, Rows: 24})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	att, _ := m.Attach(rec.ID)
+	defer att.Detach()
+
+	// El id de sesión ya viajaba desde M1; el token es lo que suma M9.
+	_ = m.Write(rec.ID, []byte("echo T=$WEBTERM_TOKEN S=$WEBTERM_SESSION_ID\n"))
+	out := awaitChunk(t, att.Output, "T=un-token-de-prueba")
+	if !strings.Contains(out, "S="+rec.ID) {
+		t.Fatalf("falta el id de sesión en el entorno: %q", tail([]byte(out), 200))
+	}
+}
+
+// TestSinExtraEnvNoHayToken: sin token configurado no se filtra una variable
+// vacía al entorno.
+func TestSinExtraEnvNoHayToken(t *testing.T) {
+	m, _ := newTestManager(t)
+	rec, _ := m.Create(CreateOpts{Cwd: "/tmp", Cols: 80, Rows: 24})
+	att, _ := m.Attach(rec.ID)
+	defer att.Detach()
+
+	_ = m.Write(rec.ID, []byte("echo TOKEN=[${WEBTERM_TOKEN:-vacio}]\n"))
+	awaitChunk(t, att.Output, "TOKEN=[vacio]")
 }

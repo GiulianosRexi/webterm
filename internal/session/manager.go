@@ -50,6 +50,10 @@ type Config struct {
 	// nil, linkear por URL deja de funcionar pero el resto del manager anda
 	// igual: la integración es opcional y no puede tumbar las sesiones.
 	Resources *resources.Cache
+	// ExtraEnv son variables que se suman al entorno de cada pty. El
+	// entrypoint las arma; así este paquete no necesita saber, por ejemplo,
+	// que existe un token de autenticación.
+	ExtraEnv []string
 }
 
 // Manager es el dueño de los ptys vivos. Es la única capa que compone
@@ -194,6 +198,7 @@ func (m *Manager) Create(o CreateOpts) (*store.Session, error) {
 
 	pt, err := terminal.New(rec.ID, terminal.Config{
 		Shell: shell, Cwd: cwd, Rows: uint16(o.Rows), Cols: uint16(o.Cols),
+		Env: m.cfg.ExtraEnv,
 	})
 	if err != nil {
 		// Dejamos la fila igual, marcada como fallida: así el error aparece
@@ -475,6 +480,7 @@ func (m *Manager) Restart(id string, cols, rows int) (*store.Session, error) {
 
 	pt, err := terminal.New(id, terminal.Config{
 		Shell: rec.Shell, Cwd: rec.Cwd, Rows: uint16(rows), Cols: uint16(cols),
+		Env: m.cfg.ExtraEnv,
 	})
 	if err != nil {
 		code := -1

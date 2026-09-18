@@ -59,6 +59,12 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		// Authorization: Bearer, que es lo que sabe mandar un cliente de API.
+		// Ni la cookie ni el ?token= le sirven al servidor MCP.
+		if tok, ok := bearerToken(r); ok && s.tokenOK(tok) {
+			next.ServeHTTP(w, r)
+			return
+		}
 		// Atajo: ?token=... entra directo y deja la cookie, para poder mandarse
 		// un link ya autenticado.
 		if q := r.URL.Query().Get("token"); s.tokenOK(q) {
@@ -78,6 +84,16 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 		}
 		http.Error(w, "no autorizado", http.StatusUnauthorized)
 	})
+}
+
+// bearerToken saca el token de un header Authorization: Bearer.
+func bearerToken(r *http.Request) (string, bool) {
+	h := r.Header.Get("Authorization")
+	const prefijo = "Bearer "
+	if len(h) <= len(prefijo) || !strings.EqualFold(h[:len(prefijo)], prefijo) {
+		return "", false
+	}
+	return strings.TrimSpace(h[len(prefijo):]), true
 }
 
 // tokenOK compara en tiempo constante contra el token configurado.
