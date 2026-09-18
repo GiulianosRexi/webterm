@@ -33,16 +33,26 @@ protocolo, la identidad de sesión y el camino de auth.
 Las dos incógnitas del diseño se resolvieron contra las herramientas reales
 antes de escribir esto.
 
-**1. Claude Code expande variables de entorno en los headers HTTP.** Se registró
-un servidor MCP de prueba apuntando a un listener que volcaba los headers:
+**1. Claude Code expande las variables de entorno en cada request, no al
+guardar la config.** Esto es lo que hace viable todo el diseño, y si fuera al
+revés la feature estaría rota de raíz: todas las sesiones escribirían sobre la
+que registró el MCP.
 
-```
-sin la variable seteada           →  x-webterm-session: ${WEBTERM_SESSION_ID}
-con WEBTERM_SESSION_ID=abc-123    →  x-webterm-session: abc-123
-```
+Se registró un servidor de prueba **una sola vez** —con la variable sin setear,
+así que quedó guardado el literal— y después se lo consultó desde tres procesos
+distintos:
 
-La expansión ocurre en tiempo de request, no al guardar la config. Eso es lo que
-hace viable identificar la sesión por header.
+| proceso | `WEBTERM_SESSION_ID` | header recibido |
+|---|---|---|
+| A | `sesion-AAAA` | `sesion-AAAA` |
+| B | `sesion-BBBB` | `sesion-BBBB` |
+| C | *(sin setear)* | `${WEBTERM_SESSION_ID}` |
+
+La config guardada siguió conteniendo el literal después de las tres corridas.
+Queda confirmado: una sola configuración sirve para todas las sesiones.
+
+El proceso C muestra el modo de falla que hay que manejar — ver *Identidad de
+sesión*.
 
 **2. El SDK oficial de Go está en v1.8.0** y expone lo que hace falta:
 
@@ -85,6 +95,14 @@ lado del backend no hay nada que agregar para que la variable exista.
 Si el header falta o la sesión no existe, la tool devuelve un error **de tool**
 (`IsError`), no un error de transporte: así Claude lee el mensaje y puede
 explicárselo al usuario en vez de ver una falla opaca de conexión.
+
+**El caso que hay que atajar explícitamente:** cuando Claude corre fuera de una
+sesión de WebTerm la variable no existe, y entonces llega el literal
+`${WEBTERM_SESSION_ID}` —verificado en la prueba de arriba—. Eso *parece* un id
+de sesión pero no lo es, así que se rechaza todo valor que contenga `${` con un
+mensaje que explique que hay que correr Claude adentro de una sesión de WebTerm.
+Sin ese chequeo, el error sería "la sesión ${WEBTERM_SESSION_ID} no existe", que
+manda a buscar el problema al lado equivocado.
 
 ## Auth
 
@@ -185,6 +203,7 @@ El header de `Authorization` se omite cuando el servidor corre sin token.
 | Caso | Qué devuelve |
 |---|---|
 | Falta el header de sesión | error de tool explicando que hay que configurarlo |
+| Llega el literal `${WEBTERM_SESSION_ID}` | error de tool avisando que Claude no está corriendo dentro de una sesión |
 | La sesión no existe | error de tool con el id que se recibió |
 | URL que ningún provider reconoce | el mensaje de `ErrUnknownResource` |
 | El PR ya estaba linkeado | el mensaje de `ErrDuplicate`, no un error genérico |
@@ -201,6 +220,9 @@ El header de `Authorization` se omite cuando el servidor corre sin token.
   quedó escrito. Es el test que prueba que el protocolo entero cierra.
 - **Auth:** que `Authorization: Bearer` funcione, que un token equivocado dé
   401, y que los caminos viejos (cookie y `?token=`) sigan andando.
+- **El literal sin expandir:** que mandar `${WEBTERM_SESSION_ID}` como valor del
+  header dé el mensaje sobre correr Claude dentro de una sesión, y no un "no
+  existe" genérico.
 - **Inyección del entorno:** que una sesión creada tenga `WEBTERM_TOKEN` en su
   entorno cuando el servidor corre con token, y que no lo tenga cuando no.
 
