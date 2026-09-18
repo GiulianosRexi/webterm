@@ -11,3 +11,8 @@ web/dist/
 
 # Caché incremental de tsc (se regenera en cada build)
 web/tsconfig.tsbuildinfo
+
+# Base de sesiones (vive en ~/.webterm por default, pero -db puede traerla acá)
+*.db
+*.db-wal
+*.db-shm
