@@ -215,6 +215,38 @@ func (s *Store) MarkExited(id string, reason ExitReason, code *int) error {
 		StatusExited, string(reason), code, now, now, id)
 }
 
+// MarkExitedIfActive marca la muerte solo si la fila todavía se cree activa, y
+// dice si le tocó a ella hacerlo.
+//
+// Es MarkExited con una guarda en el mismo UPDATE, y la guarda es lo único que
+// hace atómico al sweep del orquestador: sin ella, una sesión que muere
+// mientras el sweep corre termina con su exit_reason real —normal, killed—
+// pisado por el motivo genérico del sweep, y eso es un dato corrupto que el
+// usuario ve en la UI. Chequear antes con un SELECT achica la ventana pero no
+// la cierra; esto la elimina.
+//
+// Cero filas afectadas NO es ErrNotFound: es el caso normal de "alguien llegó
+// antes" (o de una fila borrada mientras tanto), y por eso la firma devuelve un
+// bool en vez de mentir con un error.
+func (s *Store) MarkExitedIfActive(id string, reason ExitReason, code *int) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now().UnixMilli()
+	res, err := s.db.Exec(`
+		UPDATE sessions
+		SET pty_status = ?, exit_reason = ?, exit_code = ?, exited_at = ?, last_active_at = ?
+		WHERE id = ? AND pty_status IN (?, ?)`,
+		StatusExited, string(reason), code, now, now, id, StatusRunning, StatusStarting)
+	if err != nil {
+		return false, fmt.Errorf("marcando la salida de %s: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
 // MarkRunning vuelve a marcar la sesión como viva y borra los rastros de la
 // salida anterior, para que la UI no muestre un exit code junto a una sesión
 // que está corriendo.

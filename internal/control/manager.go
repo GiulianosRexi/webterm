@@ -48,6 +48,17 @@ type Config struct {
 	ExtraEnv []string
 	// SweepEvery es cada cuánto corre la verificación de invariante.
 	SweepEvery time.Duration
+	// DaemonStartedAt es cuándo arrancó el daemon, en millis, según contestó
+	// su /info. Sirve para distinguir por qué quedó huérfana una sesión: si la
+	// fila es anterior al arranque del daemon, se la llevó el reinicio; si es
+	// posterior, es deriva y el motivo honesto es "huérfana".
+	//
+	// Va en la Config y no en un setter a propósito: lo lee el goroutine del
+	// sweep, así que mutarlo después de NewManager sería un data race. Fijarlo
+	// en la construcción hace imposible el mal uso en vez de documentarlo. El
+	// entrypoint puede preguntarle al daemon antes de construir esto: la
+	// conexión ya existe para ese momento.
+	DaemonStartedAt int64
 }
 
 // Manager es el dueño del estado de las sesiones. Los ptys son de otro.
@@ -55,11 +66,6 @@ type Manager struct {
 	st  *store.Store
 	pty ptyapi.Client
 	cfg Config
-
-	// daemonStartedAt sirve para distinguir por qué murió una sesión huérfana:
-	// si la fila es anterior al arranque del daemon, se la llevó el reinicio;
-	// si es posterior, es deriva y el motivo honesto es "huérfana".
-	daemonStartedAt int64
 
 	stop     chan struct{}
 	stopOnce sync.Once
@@ -72,9 +78,6 @@ func NewManager(st *store.Store, pty ptyapi.Client, cfg Config) *Manager {
 	}
 	return &Manager{st: st, pty: pty, cfg: cfg, stop: make(chan struct{})}
 }
-
-// SetDaemonStartedAt lo llama el entrypoint con lo que contestó /info.
-func (m *Manager) SetDaemonStartedAt(ms int64) { m.daemonStartedAt = ms }
 
 // Start hace el primer sweep y arranca la verificación periódica.
 //
@@ -277,27 +280,19 @@ func (m *Manager) Sweep() int {
 		if viva[id] {
 			continue
 		}
-		// Releemos la fila antes de marcarla. Una sesión que murió entre las
-		// dos lecturas ya tiene su exit_reason real —normal, killed— escrito
-		// por el reap del daemon, y pisarlo con daemon_restart u orphaned es
-		// corrupción de datos que el usuario ve en la UI. La ventana no se
-		// cierra del todo sin un UPDATE condicional, pero pasa de "toda la
-		// duración del sweep" a los microsegundos entre este SELECT y el
-		// UPDATE de acá abajo.
-		rec, err := m.st.GetSession(id)
+		// La guarda del UPDATE es lo que hace inofensiva la ventana entre las
+		// dos lecturas: una sesión que murió mientras tanto ya tiene su
+		// exit_reason real —normal, killed— escrito por el reap, y este UPDATE
+		// no la toca. Sin la guarda, el sweep le pisaría el motivo con el suyo
+		// y el usuario vería un dato corrupto en la UI.
+		marcada, err := m.st.MarkExitedIfActive(id, m.reasonFor(id), nil)
 		if err != nil {
-			if !errors.Is(err, store.ErrNotFound) {
-				log.Printf("sweep [%s]: %v", id, err)
-			}
+			log.Printf("sweep [%s]: %v", id, err)
 			continue
 		}
-		if rec.PtyStatus == store.StatusExited {
-			continue
-		}
-		if err := m.st.MarkExited(id, m.reasonFor(rec), nil); err != nil {
-			if !errors.Is(err, store.ErrNotFound) {
-				log.Printf("sweep [%s]: %v", id, err)
-			}
+		if !marcada {
+			// Alguien llegó antes: la fila ya no estaba activa. Es el caso
+			// normal de la carrera, no un error.
 			continue
 		}
 		log.Printf("[%s] la base la daba por activa pero el daemon no la tiene", id)
@@ -309,8 +304,12 @@ func (m *Manager) Sweep() int {
 // reasonFor distingue las dos formas de quedar huérfana. Una sesión creada
 // antes de que el daemon arrancara se la llevó el reinicio; una posterior es
 // deriva, y decir "daemon_restart" ahí sería mentir.
-func (m *Manager) reasonFor(rec *store.Session) store.ExitReason {
-	if m.daemonStartedAt == 0 || rec.CreatedAt < m.daemonStartedAt {
+func (m *Manager) reasonFor(id string) store.ExitReason {
+	if m.cfg.DaemonStartedAt == 0 {
+		return store.ReasonDaemonRestart
+	}
+	rec, err := m.st.GetSession(id)
+	if err != nil || rec.CreatedAt < m.cfg.DaemonStartedAt {
 		return store.ReasonDaemonRestart
 	}
 	return store.ReasonOrphaned

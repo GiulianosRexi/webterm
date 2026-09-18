@@ -248,3 +248,59 @@ func TestUpdateSize(t *testing.T) {
 		t.Fatalf("tamaño = %dx%d", got.Cols, got.Rows)
 	}
 }
+
+// La guarda de MarkExitedIfActive es lo que le permite al sweep escribir sin
+// riesgo: una fila que ya murió conserva su motivo real.
+func TestMarkExitedIfActive(t *testing.T) {
+	st := newTestStore(t)
+	if err := st.CreateSession(sampleSession("s1")); err != nil {
+		t.Fatal(err)
+	}
+
+	// Fila activa: le toca a este llamador marcarla.
+	marcada, err := st.MarkExitedIfActive("s1", ReasonOrphaned, nil)
+	if err != nil {
+		t.Fatalf("MarkExitedIfActive: %v", err)
+	}
+	if !marcada {
+		t.Fatal("la fila estaba activa y no la marcó")
+	}
+	got, _ := st.GetSession("s1")
+	if got.PtyStatus != StatusExited || got.ExitReason != string(ReasonOrphaned) {
+		t.Fatalf("quedó %s/%s; quería exited/orphaned", got.PtyStatus, got.ExitReason)
+	}
+
+	// Ya muerta: no se toca, y el motivo real sobrevive.
+	marcada, err = st.MarkExitedIfActive("s1", ReasonDaemonRestart, nil)
+	if err != nil {
+		t.Fatalf("MarkExitedIfActive sobre una fila muerta: %v", err)
+	}
+	if marcada {
+		t.Fatal("pisó una fila que ya estaba exited")
+	}
+	got, _ = st.GetSession("s1")
+	if got.ExitReason != string(ReasonOrphaned) {
+		t.Fatalf("exit_reason = %q; se perdió el motivo original", got.ExitReason)
+	}
+
+	// Una fila que no existe no es un error: es el mismo "no me tocó a mí".
+	marcada, err = st.MarkExitedIfActive("no-existe", ReasonOrphaned, nil)
+	if err != nil || marcada {
+		t.Fatalf("fila inexistente dio marcada=%v err=%v; quería false y nil", marcada, err)
+	}
+}
+
+// Y la contracara: sobre una fila en starting sí escribe, porque starting es un
+// estado activo. Es lo que levanta las filas que quedaron trabadas entre el
+// insert y el spawn.
+func TestMarkExitedIfActiveSobreStarting(t *testing.T) {
+	st := newTestStore(t)
+	sess := &Session{ID: "x", Cwd: "/tmp", Shell: "/bin/sh", Cols: 80, Rows: 24, PtyStatus: StatusStarting}
+	if err := st.CreateSession(sess); err != nil {
+		t.Fatal(err)
+	}
+	marcada, err := st.MarkExitedIfActive("x", ReasonDaemonRestart, nil)
+	if err != nil || !marcada {
+		t.Fatalf("starting tendría que marcarse: marcada=%v err=%v", marcada, err)
+	}
+}

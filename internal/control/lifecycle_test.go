@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/giuliano/webterm/internal/ptyapi"
 	"github.com/giuliano/webterm/internal/session"
@@ -111,7 +112,11 @@ func TestSweepNoPisaElMotivoDeUnaFilaYaMarcada(t *testing.T) {
 		}
 	}
 
-	m.Sweep()
+	// El sweep no corrigió nada: la fila ya estaba marcada por quien
+	// correspondía, y contarla sería reportar un trabajo que no hizo.
+	if n := m.Sweep(); n != 0 {
+		t.Fatalf("el sweep corrigió %d filas; quería 0", n)
+	}
 
 	got, err := st.GetSession(rec.ID)
 	if err != nil {
@@ -122,6 +127,48 @@ func TestSweepNoPisaElMotivoDeUnaFilaYaMarcada(t *testing.T) {
 	}
 	if got.ExitReason != string(store.ReasonKilled) {
 		t.Fatalf("exit_reason = %q; el sweep pisó el motivo real con el suyo", got.ExitReason)
+	}
+}
+
+// Con el arranque del daemon conocido, el sweep distingue las dos formas de
+// quedar huérfana en vez de mentir con un motivo fijo: lo anterior al arranque
+// se lo llevó el reinicio; lo posterior es deriva.
+func TestSweepDistingueOrphanedDeDaemonRestart(t *testing.T) {
+	st := newTestStore(t)
+	pty := session.NewManager(st, session.Config{HistoryBytes: 64 << 10})
+	arranque := time.Now().UnixMilli()
+	m := NewManager(st, pty, Config{Shell: "/bin/sh", DaemonStartedAt: arranque})
+	t.Cleanup(func() {
+		_ = m.Close()
+		_ = pty.Close()
+		_ = st.Close()
+	})
+
+	vieja := &store.Session{
+		ID: store.NewID(), Cwd: t.TempDir(), Shell: "/bin/sh", Cols: 80, Rows: 24,
+		PtyStatus: store.StatusRunning, CreatedAt: arranque - 1000,
+	}
+	nueva := &store.Session{
+		ID: store.NewID(), Cwd: t.TempDir(), Shell: "/bin/sh", Cols: 80, Rows: 24,
+		PtyStatus: store.StatusRunning, CreatedAt: arranque + 1000,
+	}
+	for _, rec := range []*store.Session{vieja, nueva} {
+		if err := st.CreateSession(rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if n := m.Sweep(); n != 2 {
+		t.Fatalf("el sweep corrigió %d filas; quería 2", n)
+	}
+
+	got, _ := st.GetSession(vieja.ID)
+	if got.ExitReason != string(store.ReasonDaemonRestart) {
+		t.Fatalf("la fila anterior al arranque quedó %q; quería daemon_restart", got.ExitReason)
+	}
+	got, _ = st.GetSession(nueva.ID)
+	if got.ExitReason != string(store.ReasonOrphaned) {
+		t.Fatalf("la fila posterior al arranque quedó %q; quería orphaned", got.ExitReason)
 	}
 }
 
