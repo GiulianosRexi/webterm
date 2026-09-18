@@ -48,17 +48,6 @@ type Config struct {
 	ExtraEnv []string
 	// SweepEvery es cada cuánto corre la verificación de invariante.
 	SweepEvery time.Duration
-	// DaemonStartedAt es cuándo arrancó el daemon, en millis, según contestó
-	// su /info. Sirve para distinguir por qué quedó huérfana una sesión: si la
-	// fila es anterior al arranque del daemon, se la llevó el reinicio; si es
-	// posterior, es deriva y el motivo honesto es "huérfana".
-	//
-	// Va en la Config y no en un setter a propósito: lo lee el goroutine del
-	// sweep, así que mutarlo después de NewManager sería un data race. Fijarlo
-	// en la construcción hace imposible el mal uso en vez de documentarlo. El
-	// entrypoint puede preguntarle al daemon antes de construir esto: la
-	// conexión ya existe para ese momento.
-	DaemonStartedAt int64
 }
 
 // Manager es el dueño del estado de las sesiones. Los ptys son de otro.
@@ -289,6 +278,15 @@ func (m *Manager) Sweep() int {
 	for _, id := range liveIDs {
 		live[id] = true
 	}
+	// El arranque del dueño de los ptys se pregunta acá, una vez por barrido, y
+	// no se guarda en la Config: `webterm daemon restart` reemplaza al daemon
+	// sin reiniciar al orquestador, y un valor tomado al arrancar seguiría
+	// fechando contra un proceso que ya murió. El resultado sería etiquetar
+	// "orphaned" —o sea, "hay un bug"— a sesiones que se llevó puestas un
+	// reinicio que pediste vos. Una vez por barrido y no por fila porque es un
+	// viaje por el socket y todas las filas de este barrido merecen la misma
+	// referencia temporal.
+	startedAt := m.pty.StartedAt()
 
 	n := 0
 	for _, id := range active {
@@ -300,7 +298,7 @@ func (m *Manager) Sweep() int {
 		// exit_reason real —normal, killed— escrito por el reap, y este UPDATE
 		// no la toca. Sin la guarda, el sweep le pisaría el motivo con el suyo
 		// y el usuario vería un dato corrupto en la UI.
-		marked, err := m.st.MarkExitedIfActive(id, m.reasonFor(id), nil)
+		marked, err := m.st.MarkExitedIfActive(id, m.reasonFor(id, startedAt), nil)
 		if err != nil {
 			log.Printf("sweep [%s]: %v", id, err)
 			continue
@@ -319,12 +317,15 @@ func (m *Manager) Sweep() int {
 // reasonFor distingue las dos formas de quedar huérfana. Una sesión creada
 // antes de que el daemon arrancara se la llevó el reinicio; una posterior es
 // deriva, y decir "daemon_restart" ahí sería mentir.
-func (m *Manager) reasonFor(id string) store.ExitReason {
-	if m.cfg.DaemonStartedAt == 0 {
+//
+// startedAt llega por parámetro y no se lee de un campo: es el arranque del
+// daemon que está vivo AHORA, tal como lo contestó este barrido.
+func (m *Manager) reasonFor(id string, startedAt int64) store.ExitReason {
+	if startedAt == 0 {
 		return store.ReasonDaemonRestart
 	}
 	rec, err := m.st.GetSession(id)
-	if err != nil || rec.CreatedAt < m.cfg.DaemonStartedAt {
+	if err != nil || rec.CreatedAt < startedAt {
 		return store.ReasonDaemonRestart
 	}
 	return store.ReasonOrphaned

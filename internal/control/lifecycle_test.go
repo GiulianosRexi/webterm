@@ -3,6 +3,7 @@ package control
 import (
 	"bytes"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,10 +18,13 @@ func TestSweepUsaLoQueReportaElClienteDePtys(t *testing.T) {
 	m, st := newTestManager(t)
 
 	// Una fila "viva" que nunca se spawneó: exactamente lo que queda después
-	// de que el daemon arranque de nuevo.
+	// de que el daemon arranque de nuevo. El CreatedAt va explícito y anterior
+	// al arranque del dueño de los ptys, que es lo que la vuelve una víctima
+	// del reinicio y no una fila a la deriva.
 	orphan := &store.Session{
 		ID: store.NewID(), Cwd: t.TempDir(), Shell: "/bin/sh",
 		Cols: 80, Rows: 24, PtyStatus: store.StatusRunning,
+		CreatedAt: m.pty.StartedAt() - 1000,
 	}
 	if err := st.CreateSession(orphan); err != nil {
 		t.Fatal(err)
@@ -138,8 +142,10 @@ func TestSweepNoPisaElMotivoDeUnaFilaYaMarcada(t *testing.T) {
 func TestSweepDistingueOrphanedDeDaemonRestart(t *testing.T) {
 	st := newTestStore(t)
 	pty := session.NewManager(st, session.Config{HistoryBytes: 64 << 10})
-	startedAt := time.Now().UnixMilli()
-	m := NewManager(st, pty, Config{Shell: "/bin/sh", DaemonStartedAt: startedAt})
+	// El arranque sale del propio dueño de los ptys: es lo que el sweep le
+	// pregunta, así que el test fecha contra lo mismo que el código.
+	startedAt := pty.StartedAt()
+	m := NewManager(st, pty, Config{Shell: "/bin/sh"})
 	t.Cleanup(func() {
 		_ = m.Close()
 		_ = pty.Close()
@@ -173,6 +179,91 @@ func TestSweepDistingueOrphanedDeDaemonRestart(t *testing.T) {
 		t.Fatalf("la fila posterior al arranque quedó %q; quería orphaned", got.ExitReason)
 	}
 }
+
+// Un `webterm daemon restart` reemplaza al dueño de los ptys sin que el
+// orquestador se entere: mismo proceso, mismo cliente, otro daemon del otro
+// lado del socket. El sweep tiene que fechar contra el daemon de AHORA.
+//
+// Con el arranque cacheado en la Config, las sesiones de este caso quedaban
+// marcadas "orphaned" —que está documentado como "deriva entre la base y las
+// sesiones vivas", o sea un bug— cuando en realidad se las llevó puestas un
+// reinicio que pediste vos.
+func TestSweepFechaContraElDaemonDeAhoraYNoContraElDelArranque(t *testing.T) {
+	st := newTestStore(t)
+	now := time.Now().UnixMilli()
+
+	// El dueño original arrancó hace rato, y la sesión se creó contra él.
+	pty := &swappableOwner{inner: &fakeOwner{startedAt: now - 10_000}}
+	m := NewManager(st, pty, Config{Shell: "/bin/sh"})
+	t.Cleanup(func() {
+		_ = m.Close()
+		_ = st.Close()
+	})
+
+	rec := &store.Session{
+		ID: store.NewID(), Cwd: t.TempDir(), Shell: "/bin/sh", Cols: 80, Rows: 24,
+		PtyStatus: store.StatusRunning, CreatedAt: now - 5_000,
+	}
+	if err := st.CreateSession(rec); err != nil {
+		t.Fatal(err)
+	}
+
+	// `webterm daemon restart`: el dueño de los ptys es otro, arrancado
+	// después de que esta sesión naciera.
+	pty.swap(&fakeOwner{startedAt: now - 1_000})
+
+	if n := m.Sweep(); n != 1 {
+		t.Fatalf("el sweep corrigió %d filas; quería 1", n)
+	}
+	got, err := st.GetSession(rec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ExitReason != string(store.ReasonDaemonRestart) {
+		t.Fatalf("exit_reason = %q; se la llevó un daemon restart, no la deriva", got.ExitReason)
+	}
+}
+
+// fakeOwner es un dueño de ptys sin ptys: contesta cuándo arrancó y que no
+// tiene nada vivo, que es todo lo que el sweep consulta. Los demás métodos los
+// pone el embebido en nil: llamarlos sería un bug del sweep y panickea, que es
+// justo lo que queremos que pase.
+type fakeOwner struct {
+	ptyapi.Client
+	startedAt int64
+}
+
+func (f *fakeOwner) LiveIDs() ([]string, error) { return nil, nil }
+func (f *fakeOwner) StartedAt() int64           { return f.startedAt }
+func (f *fakeOwner) Close() error               { return nil }
+
+// swappableOwner es un cliente cuyo dueño de ptys puede cambiar bajo los pies,
+// igual que le pasa al daemonclient cuando reiniciás el daemon aparte.
+type swappableOwner struct {
+	mu    sync.Mutex
+	inner ptyapi.Client
+}
+
+func (s *swappableOwner) swap(c ptyapi.Client) {
+	s.mu.Lock()
+	s.inner = c
+	s.mu.Unlock()
+}
+
+func (s *swappableOwner) current() ptyapi.Client {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.inner
+}
+
+func (s *swappableOwner) Spawn(o ptyapi.SpawnOpts) error { return s.current().Spawn(o) }
+func (s *swappableOwner) Attach(id string) (ptyapi.Attachment, error) {
+	return s.current().Attach(id)
+}
+func (s *swappableOwner) Kill(id string) error       { return s.current().Kill(id) }
+func (s *swappableOwner) LiveIDs() ([]string, error) { return s.current().LiveIDs() }
+func (s *swappableOwner) StartedAt() int64           { return s.current().StartedAt() }
+func (s *swappableOwner) Close() error               { return s.current().Close() }
 
 // hookPty deja correr algo entre las dos lecturas del sweep, que es donde vive
 // la carrera. Debajo hay un manager de ptys de verdad.

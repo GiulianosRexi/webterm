@@ -1,17 +1,20 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"log"
-	"net"
 	"os"
 	"os/exec"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
+
+	"github.com/mattn/go-isatty"
 
 	"github.com/giuliano/webterm/internal/daemon"
 	"github.com/giuliano/webterm/internal/daemonclient"
@@ -19,9 +22,20 @@ import (
 	"github.com/giuliano/webterm/internal/store"
 )
 
-// daemonReadyTimeout es cuánto esperamos a que el daemon recién spawneado
-// conteste en su socket.
-const daemonReadyTimeout = 2 * time.Second
+// daemonReadyTimeout es el techo de cuánto esperamos a que el daemon recién
+// spawneado conteste en su socket.
+//
+// Era de 2 s y no alcanzaba. Un daemon sano contesta en unos 50 ms, pero
+// arrancar un proceso, abrir SQLite y correr las migraciones tarda bastante más
+// en una máquina cargada: la suite completa con -race pasaba los 2 s y hacía
+// fallar el test del arranque on-demand más o menos dos veces de cada tres.
+//
+// No hay forma barata de acortar el caso malo: el daemon se spawnea con
+// Process.Release(), así que si muere al arrancar queda de zombi hasta que
+// terminemos nosotros y sigue contestando que existe —verificado—. O sea que
+// este reloj es la única señal de "no va a venir", y de ahí que se pague
+// esperándolo entero cuando algo salió mal.
+const daemonReadyTimeout = 5 * time.Second
 
 // runDaemon es el modo daemon: abre la base, arma el manager de ptys y escucha
 // en el socket hasta que lo apaguen.
@@ -51,6 +65,12 @@ func runDaemon(dbPath string, historyBytes int64) error {
 
 	// Al apagar, matamos los ptys y esperamos el último flush del historial.
 	// Lo que quede marcado activo lo corrige el sweep del orquestador.
+	//
+	// La señal NO termina el proceso desde el goroutine: solo corta el
+	// servidor HTTP, para que Serve devuelva y el cierre pase por el camino
+	// normal de retorno. Antes se hacía os.Exit(0) acá, y eso dejaba los
+	// `defer lock.Close()` y `defer st.Close()` de arriba como decoración:
+	// prometían un cierre ordenado que nunca corría.
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
 	go func() {
@@ -59,13 +79,15 @@ func runDaemon(dbPath string, historyBytes int64) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(ctx)
-		_ = mgr.Close()
-		_ = st.Close()
-		_ = os.Remove(paths.Socket)
-		os.Exit(0)
 	}()
 
-	return srv.Serve(paths.Socket)
+	err = srv.Serve(paths.Socket)
+	// mgr.Close() va antes de que corran los defers: mata los ptys y espera el
+	// último flush del historial, y eso escribe en la base que st.Close() está
+	// por cerrar.
+	_ = mgr.Close()
+	_ = os.Remove(paths.Socket)
+	return err
 }
 
 // ensureDaemon devuelve un cliente contra un daemon vivo, levantándolo si hace
@@ -96,32 +118,45 @@ func ensureDaemonWith(bin string, paths daemon.Paths, dbPath string, historyByte
 	}
 	_ = cl.Close()
 
-	if err := spawnDaemon(bin, dbPath, paths, historyBytes); err != nil {
+	pid, err := spawnDaemon(bin, dbPath, paths, historyBytes)
+	if err != nil {
 		return nil, err
 	}
 
 	cl = daemonclient.New(paths.Socket)
 	deadline := time.Now().Add(daemonReadyTimeout)
 	for {
-		if err := cl.Check(); err == nil {
+		// El "daemon levantado" se anuncia acá y no en spawnDaemon: fork() no
+		// es lo mismo que un daemon listo, y un proceso que muere a los 5 ms
+		// hacía que el usuario leyera "daemon levantado (pid N)" seguido de
+		// "el daemon no respondió". Se afirma después de que contestó.
+		err := cl.Check()
+		if err == nil {
+			log.Printf("daemon levantado (pid %d); log en %s", pid, paths.Log)
 			return cl, nil
-		} else if errors.Is(err, daemonclient.ErrProtocolMismatch) {
+		}
+		if errors.Is(err, daemonclient.ErrProtocolMismatch) {
 			_ = cl.Close()
 			return nil, err
 		}
 		if time.Now().After(deadline) {
 			_ = cl.Close()
-			return nil, fmt.Errorf("el daemon no respondió en %s; mirá %s", daemonReadyTimeout, paths.Log)
+			return nil, fmt.Errorf("el daemon (pid %d) no respondió en %s; mirá %s",
+				pid, daemonReadyTimeout, paths.Log)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 }
 
-// spawnDaemon lanza el daemon desatado de este proceso.
-func spawnDaemon(bin, dbPath string, paths daemon.Paths, historyBytes int64) error {
+// spawnDaemon lanza el daemon desatado de este proceso y devuelve su pid.
+//
+// Devuelve el pid en vez de loguearlo: acá lo único que se sabe es que el
+// fork salió bien, que no es lo mismo que "hay un daemon andando". Quien
+// espera a que conteste es el que puede afirmarlo.
+func spawnDaemon(bin, dbPath string, paths daemon.Paths, historyBytes int64) (int, error) {
 	logFile, err := os.OpenFile(paths.Log, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
-		return fmt.Errorf("abriendo %s: %w", paths.Log, err)
+		return 0, fmt.Errorf("abriendo %s: %w", paths.Log, err)
 	}
 	defer logFile.Close()
 
@@ -136,7 +171,7 @@ func spawnDaemon(bin, dbPath string, paths daemon.Paths, historyBytes int64) err
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("levantando el daemon: %w", err)
+		return 0, fmt.Errorf("levantando el daemon: %w", err)
 	}
 	pid := cmd.Process.Pid
 	// No esperamos al proceso: es un daemon, tiene que sobrevivirnos. Release
@@ -147,9 +182,7 @@ func spawnDaemon(bin, dbPath string, paths daemon.Paths, historyBytes int64) err
 	if err := cmd.Process.Release(); err != nil {
 		log.Printf("liberando el proceso del daemon (pid %d): %v", pid, err)
 	}
-
-	log.Printf("daemon levantado (pid %d); log en %s", pid, paths.Log)
-	return nil
+	return pid, nil
 }
 
 // acquireLock toma un flock exclusivo y no bloqueante.
@@ -180,16 +213,87 @@ func stopDaemon(paths daemon.Paths) error {
 	if err := p.Signal(syscall.SIGTERM); err != nil {
 		return err
 	}
-	// Esperamos a que el socket deje de aceptar: así `daemon restart` no
-	// intenta levantar el nuevo antes de que el viejo suelte el lock.
+	// Lo que esperamos es el flock, no el socket.
+	//
+	// El daemon cierra el listener antes de soltar el flock, así que "el socket
+	// dejó de aceptar" llega antes que "el lock está libre" —medido: 0,19 ms
+	// ocioso, 1,17 ms bajo carga—. Hoy no muerde porque arrancar un proceso Go
+	// tarda unos 10 ms, pero la garantía que necesita `daemon restart` es
+	// justamente la del lock: si el nuevo daemon arranca con el viejo todavía
+	// teniéndolo, muere con "ya hay un daemon para esta base". Pollear el
+	// propio flock y soltarlo al conseguirlo prueba la condición que importa en
+	// vez de una que se le parece.
 	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if c, err := net.Dial("unix", paths.Socket); err != nil {
+	for {
+		lock, lerr := acquireLock(paths.Lock)
+		if lerr == nil {
+			// Lo soltamos enseguida: solo queríamos saber que el viejo ya no lo
+			// tiene. Cerrar el archivo suelta el flock.
+			_ = lock.Close()
 			return nil
-		} else {
-			_ = c.Close()
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("el daemon (pid %d) no soltó %s a tiempo", info.PID, paths.Lock)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	return fmt.Errorf("el daemon (pid %d) no terminó a tiempo", info.PID)
+}
+
+// confirmKill avisa cuántas sesiones vivas se va a llevar una operación
+// destructiva y, si hay una terminal del otro lado, pide confirmación.
+//
+// stop y restart son lo único del binario que destruye datos del usuario, y
+// hasta acá restart no avisaba nada y stop avisaba después del hecho. El aviso
+// sale SIEMPRE; la confirmación solo cuando stdin es una terminal, porque un
+// `make daemon-restart` adentro de un script no tiene quién conteste y colgarse
+// esperando sería peor que el daño que se intenta evitar. Para ese caso —y para
+// el que ya sabe lo que hace— está -yes.
+func confirmKill(paths daemon.Paths, action string, assumeYes bool) bool {
+	cl := daemonclient.New(paths.Socket)
+	defer cl.Close()
+	live, err := cl.LiveIDs()
+	if err != nil {
+		// No hay daemon, o no contesta: no hay nada que destruir, y el propio
+		// stop va a explicar mejor qué pasó.
+		return true
+	}
+	if len(live) == 0 {
+		return true
+	}
+
+	noun := "sesiones vivas"
+	if len(live) == 1 {
+		noun = "sesión viva"
+	}
+	fmt.Fprintf(os.Stderr, "¡atención! `webterm daemon %s` va a matar %d %s (%s)\n",
+		action, len(live), noun, paths.Socket)
+
+	if assumeYes {
+		return true
+	}
+	if !isInteractive() {
+		fmt.Fprintln(os.Stderr, "no hay terminal para confirmar, así que sigo; pasá -yes para no ver este aviso")
+		return true
+	}
+	fmt.Fprint(os.Stderr, "¿seguir? [s/N] ")
+	answer, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	if err != nil && answer == "" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(answer)) {
+	case "s", "si", "sí", "y", "yes":
+		return true
+	}
+	return false
+}
+
+// isInteractive dice si stdin es una terminal, o sea si hay alguien del otro
+// lado capaz de contestar una pregunta.
+//
+// Se pregunta con un ioctl de verdad y no mirando os.ModeCharDevice: /dev/null
+// TAMBIÉN es un dispositivo de caracteres, así que un `webterm daemon restart
+// < /dev/null` —la forma canónica de correr algo sin entrada— se hacía pasar
+// por interactivo, leía EOF y cancelaba la operación que le pediste.
+func isInteractive() bool {
+	return isatty.IsTerminal(os.Stdin.Fd()) || isatty.IsCygwinTerminal(os.Stdin.Fd())
 }

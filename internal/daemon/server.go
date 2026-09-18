@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"os"
 	"sync/atomic"
-	"time"
 
 	"github.com/giuliano/webterm/internal/ptyapi"
 	"github.com/giuliano/webterm/internal/store"
@@ -38,8 +37,7 @@ type Info struct {
 // abrirlo ya es el dueño de la máquina y ya tiene shell. Sumar un token acá
 // sería ceremonia sin propiedad nueva.
 type Server struct {
-	pty       ptyapi.Client
-	startedAt int64
+	pty ptyapi.Client
 
 	// http es un atomic.Pointer y no un campo simple porque Serve lo escribe
 	// desde la goroutine que sirve mientras Shutdown lo lee desde quien apaga:
@@ -49,7 +47,7 @@ type Server struct {
 }
 
 func NewServer(pty ptyapi.Client) *Server {
-	return &Server{pty: pty, startedAt: time.Now().UnixMilli()}
+	return &Server{pty: pty}
 }
 
 // Handler arma el router. Son cinco rutas y ese número no debería crecer: si
@@ -108,7 +106,10 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 func (s *Server) handleInfo(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, Info{
-		ProtocolVersion: ProtocolVersion, PID: os.Getpid(), StartedAt: s.startedAt,
+		// El arranque que se reporta es el del dueño de los ptys, no el de este
+		// servidor HTTP: es el que le sirve al sweep del orquestador para
+		// fechar las sesiones, y tenerlo dos veces sería tener dos verdades.
+		ProtocolVersion: ProtocolVersion, PID: os.Getpid(), StartedAt: s.pty.StartedAt(),
 	})
 }
 

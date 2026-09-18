@@ -43,6 +43,11 @@ type Manager struct {
 	st  *store.Store
 	cfg Config
 
+	// startedAt es cuándo nació este manager. Es inmutable después de
+	// NewManager, así que leerlo desde cualquier goroutine es seguro sin
+	// candado: no hay quién lo escriba.
+	startedAt int64
+
 	mu   sync.RWMutex
 	live map[string]*liveSession
 
@@ -102,10 +107,11 @@ func NewManager(st *store.Store, cfg Config) *Manager {
 		cfg.HistoryBytes = DefaultHistoryBytes
 	}
 	return &Manager{
-		st:   st,
-		cfg:  cfg,
-		live: map[string]*liveSession{},
-		stop: make(chan struct{}),
+		st:        st,
+		cfg:       cfg,
+		startedAt: time.Now().UnixMilli(),
+		live:      map[string]*liveSession{},
+		stop:      make(chan struct{}),
 	}
 }
 
@@ -354,6 +360,11 @@ func (m *Manager) LiveIDs() ([]string, error) {
 	}
 	return ids, nil
 }
+
+// StartedAt es cuándo arrancó este dueño de ptys. Lo usa el sweep del
+// orquestador para distinguir una sesión que se llevó puesta el reinicio del
+// daemon de una fila que quedó a la deriva.
+func (m *Manager) StartedAt() int64 { return m.startedAt }
 
 func (m *Manager) lookup(id string) *liveSession {
 	m.mu.RLock()

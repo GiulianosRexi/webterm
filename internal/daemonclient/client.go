@@ -131,6 +131,19 @@ func (c *Client) LiveIDs() ([]string, error) {
 	return out.IDs, nil
 }
 
+// StartedAt es cuándo arrancó el daemon que está del otro lado del socket.
+//
+// Se pregunta cada vez y no se cachea a propósito: entre dos llamadas puede
+// haber corrido un `webterm daemon restart`, y un valor guardado describiría a
+// un proceso muerto. Un daemon caído da 0, que el orquestador lee como "no sé".
+func (c *Client) StartedAt() int64 {
+	info, err := c.Info()
+	if err != nil {
+		return 0
+	}
+	return info.StartedAt
+}
+
 // Close suelta las conexiones ociosas. No toca las sesiones del daemon: el
 // orquestador se va, los ptys se quedan, que es todo el punto de M10.
 func (c *Client) Close() error {

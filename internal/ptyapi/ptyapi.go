@@ -85,6 +85,16 @@ type Client interface {
 	// LiveIDs son las sesiones con proceso corriendo. Es la fuente de verdad
 	// del sweep del orquestador.
 	LiveIDs() ([]string, error)
+	// StartedAt es cuándo arrancó el dueño de los ptys, en millis Unix, o 0 si
+	// no se pudo averiguar.
+	//
+	// Está en el contrato y no en un callback del orquestador porque no es una
+	// feature del orquestador metiéndose en el daemon: es el dueño de los ptys
+	// describiéndose a sí mismo, igual que LiveIDs. Y tiene que preguntarse en
+	// cada uso, no cachearse: un `webterm daemon restart` reemplaza al dueño
+	// sin que el orquestador se entere, y un valor cacheado pasaría a hablar
+	// de un proceso que ya no existe.
+	StartedAt() int64
 	// Close suelta los recursos del cliente. No mata las sesiones remotas.
 	Close() error
 }
