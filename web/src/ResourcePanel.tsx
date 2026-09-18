@@ -211,21 +211,42 @@ function ReviewBadge({ decision }: { decision: string }) {
   }
 }
 
-// ChecksBadge muestra pasados/total del último commit. Los salteados cuentan
-// como pasados: un PR sano con checks condicionales tiene la mayoría en
-// SKIPPED, y contarlos como pendientes lo haría ver roto.
+// ChecksBadge reproduce el resumen de GitHub ("1 skipped, 1 expected, 28
+// successful checks") en vez de colapsarlo en un solo número: no es lo mismo
+// que falten checks por correr que que estén salteados, y esa distinción es
+// justo lo que uno mira antes de mergear.
+//
+// Las categorías suman el total, así que el desglose siempre cierra contra el
+// número de checks que muestra GitHub.
 function ChecksBadge({ pr }: { pr: PRState }) {
+  const partes: string[] = []
+  const push = (n: number, etiqueta: string) => {
+    if (n > 0) partes.push(`${n} ${etiqueta}`)
+  }
+  // De lo más urgente a lo más inocuo; los exitosos al final, como GitHub.
+  push(pr.checks_failing, 'fallando')
+  push(pr.checks_pending, 'corriendo')
+  push(pr.checks_expected, 'esperando')
+  push(pr.checks_cancelled, 'cancelado')
+  push(pr.checks_neutral, 'neutral')
+  push(pr.checks_other, 'sin clasificar')
+  push(pr.checks_skipped, 'salteado')
+  push(pr.checks_success, 'ok')
+
   const estado =
-    pr.checks_failing > 0 ? 'closed' : pr.checks_pending > 0 ? 'draft' : 'open'
-  const detalle =
     pr.checks_failing > 0
-      ? `${pr.checks_failing} fallando de ${pr.checks_total}`
-      : pr.checks_pending > 0
-        ? `${pr.checks_pending} corriendo de ${pr.checks_total}`
-        : `${pr.checks_total} checks del último commit`
+      ? 'closed'
+      : pr.checks_pending > 0 || pr.checks_expected > 0
+        ? 'draft'
+        : 'open'
+
   return (
-    <span className="badge" data-state={estado} title={`Checks: ${detalle}`}>
-      {pr.checks_passed}/{pr.checks_total} checks
+    <span
+      className="badge checks"
+      data-state={estado}
+      title={`${pr.checks_total} checks del último commit`}
+    >
+      {partes.join(' · ')}
     </span>
   )
 }

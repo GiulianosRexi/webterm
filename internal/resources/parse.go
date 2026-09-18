@@ -63,16 +63,49 @@ type prResponse struct {
 // checkFailures son las conclusiones de CheckRun y los estados de
 // StatusContext que cuentan como falla. SKIPPED, NEUTRAL y CANCELLED no lo
 // son: un check salteado no rompe nada.
-var checkFailures = map[string]bool{
-	"FAILURE": true, "TIMED_OUT": true, "STARTUP_FAILURE": true,
-	"ACTION_REQUIRED": true, "ERROR": true,
-}
+// checkCategory clasifica un contexto de check con las mismas categorías que
+// usa el resumen de GitHub.
+//
+// Los dos tipos de contexto se leen distinto: un CheckRun dice si terminó en
+// status y cómo le fue en conclusion; un StatusContext tiene todo en state.
+func checkCategory(typeName, conclusion, status, state string) string {
+	if typeName == "StatusContext" {
+		switch state {
+		case "SUCCESS":
+			return "success"
+		case "FAILURE", "ERROR":
+			return "failing"
+		case "PENDING":
+			return "pending"
+		case "EXPECTED":
+			// Un check requerido que todavía nadie reportó. GitHub lo cuenta
+			// aparte de los que están corriendo, y la distinción importa:
+			// este puede no llegar nunca.
+			return "expected"
+		}
+		return "other"
+	}
 
-// checkPending son los estados de un check que todavía no terminó. En un
-// CheckRun eso lo dice status; en un StatusContext, state.
-var checkPending = map[string]bool{
-	"QUEUED": true, "IN_PROGRESS": true, "WAITING": true,
-	"REQUESTED": true, "PENDING": true, "EXPECTED": true,
+	// CheckRun: mientras no esté COMPLETED sigue corriendo, sin importar qué
+	// diga conclusion.
+	if status != "" && status != "COMPLETED" {
+		return "pending"
+	}
+	switch conclusion {
+	case "SUCCESS":
+		return "success"
+	case "SKIPPED":
+		return "skipped"
+	case "FAILURE", "TIMED_OUT", "STARTUP_FAILURE", "ACTION_REQUIRED":
+		return "failing"
+	case "CANCELLED":
+		return "cancelled"
+	case "NEUTRAL", "STALE":
+		return "neutral"
+	case "":
+		return "pending"
+	}
+	return "other"
 }
 
 // parsePRResponse mapea la respuesta de GraphQL a PRState.
@@ -119,20 +152,23 @@ func parsePRResponse(body []byte) (*PRState, error) {
 			out.ChecksState = rollup.State
 			out.ChecksTotal = rollup.Contexts.TotalCount
 			for _, c := range rollup.Contexts.Nodes {
-				// CheckRun trae conclusion + status; StatusContext, solo state.
-				outcome, progress := c.Conclusion, c.Status
-				if c.TypeName == "StatusContext" {
-					outcome, progress = c.State, c.State
-				}
-				switch {
-				case checkFailures[outcome]:
+				switch checkCategory(c.TypeName, c.Conclusion, c.Status, c.State) {
+				case "success":
+					out.ChecksSuccess++
+				case "failing":
 					out.ChecksFailing++
-				case outcome == "" || checkPending[progress]:
+				case "pending":
 					out.ChecksPending++
+				case "expected":
+					out.ChecksExpected++
+				case "skipped":
+					out.ChecksSkipped++
+				case "cancelled":
+					out.ChecksCancelled++
+				case "neutral":
+					out.ChecksNeutral++
 				default:
-					// Incluye SKIPPED, NEUTRAL y CANCELLED: no fallaron, así
-					// que no tienen por qué pintar el PR de rojo.
-					out.ChecksPassed++
+					out.ChecksOther++
 				}
 			}
 		}

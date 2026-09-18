@@ -79,9 +79,14 @@ export interface PRState {
   threads_truncated: boolean
   checks_state: string
   checks_total: number
-  checks_passed: number
+  checks_success: number
   checks_failing: number
   checks_pending: number
+  checks_expected: number
+  checks_skipped: number
+  checks_cancelled: number
+  checks_neutral: number
+  checks_other: number
 }
 
 export interface Snapshot {

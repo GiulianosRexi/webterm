@@ -44,12 +44,22 @@ type PRState struct {
 	// expiraron, que es lo que devuelve la API en PRs viejos.
 	ChecksState string `json:"checks_state"` // SUCCESS | FAILURE | PENDING | ""
 	ChecksTotal int    `json:"checks_total"`
-	// ChecksPassed cuenta todo lo que no está fallando ni corriendo, así que
-	// incluye los salteados. Contar solo los SUCCESS haría que un PR sano con
-	// muchos checks condicionales se vea como si estuviera roto.
-	ChecksPassed  int `json:"checks_passed"`
-	ChecksFailing int `json:"checks_failing"`
-	ChecksPending int `json:"checks_pending"`
+
+	// El desglose usa las mismas categorías que el resumen de GitHub
+	// ("1 skipped, 1 expected, 28 successful checks"), porque colapsarlas en
+	// un solo número pierde justo lo que uno mira: no es lo mismo que falten
+	// checks por correr que que estén salteados.
+	//
+	// Las categorías suman ChecksTotal; ChecksOther junta lo que la API
+	// devuelva y no sepamos clasificar, para que la suma cierre igual.
+	ChecksSuccess   int `json:"checks_success"`
+	ChecksFailing   int `json:"checks_failing"`
+	ChecksPending   int `json:"checks_pending"`  // corriendo o encolado
+	ChecksExpected  int `json:"checks_expected"` // requerido y todavía sin reportar
+	ChecksSkipped   int `json:"checks_skipped"`
+	ChecksCancelled int `json:"checks_cancelled"`
+	ChecksNeutral   int `json:"checks_neutral"`
+	ChecksOther     int `json:"checks_other"`
 }
 
 // Snapshot es el estado de un recurso en un momento dado. Error y PR son

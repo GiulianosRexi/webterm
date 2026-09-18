@@ -41,9 +41,8 @@ func TestParsePROpenConChecks(t *testing.T) {
 	if pr.ChecksFailing != 2 {
 		t.Fatalf("checks_failing = %d, se esperaban 2", pr.ChecksFailing)
 	}
-	// SKIPPED y SUCCESS pasan; el que está corriendo queda pendiente.
-	if pr.ChecksPassed != 2 || pr.ChecksPending != 0 {
-		t.Fatalf("passed=%d pending=%d", pr.ChecksPassed, pr.ChecksPending)
+	if pr.ChecksSuccess != 1 || pr.ChecksSkipped != 1 {
+		t.Fatalf("success=%d skipped=%d", pr.ChecksSuccess, pr.ChecksSkipped)
 	}
 	if pr.UnresolvedCount != 0 {
 		t.Fatalf("unresolved = %d", pr.UnresolvedCount)
@@ -60,7 +59,7 @@ func TestParsePRSinChecks(t *testing.T) {
 	if pr.State != "MERGED" || pr.ReviewDecision != "APPROVED" {
 		t.Fatalf("estado mal: %+v", pr)
 	}
-	if pr.ChecksState != "" || pr.ChecksTotal != 0 || pr.ChecksFailing != 0 {
+	if pr.ChecksState != "" || pr.ChecksTotal != 0 || pr.ChecksSuccess != 0 {
 		t.Fatalf("sin checks tendría que quedar todo en cero: %+v", pr)
 	}
 	// De dos threads, uno sin resolver.
@@ -117,21 +116,25 @@ func TestParsePRThreadsTruncados(t *testing.T) {
 	}
 }
 
-// TestParsePRChecksSalteadosCuentanComoPasados es el caso que hace la
-// diferencia entre una card útil y una que miente: un PR sano con muchos
-// checks condicionales tiene la mayoría en SKIPPED. Contar solo los SUCCESS
-// lo mostraría como "7/20" y parecería roto.
-func TestParsePRChecksSalteadosCuentanComoPasados(t *testing.T) {
-	body := []byte(`{"data":{"repository":{"nameWithOwner":"cli/cli","pullRequest":{
+// TestParsePRDesgloseDeChecks reproduce el resumen que muestra GitHub
+// ("1 skipped, 1 expected, 28 successful checks"): colapsar las categorías en
+// un solo número pierde justo lo que uno mira, porque no es lo mismo que
+// falten checks por correr que que estén salteados.
+func TestParsePRDesgloseDeChecks(t *testing.T) {
+	body := []byte(`{"data":{"repository":{"nameWithOwner":"o/r","pullRequest":{
 	  "number":1,"title":"t","url":"u","state":"OPEN","isDraft":false,
 	  "mergeable":"MERGEABLE","reviewDecision":"","author":{"login":"a"},
 	  "reviewThreads":{"totalCount":0,"nodes":[]},
-	  "commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"SUCCESS",
-	    "contexts":{"totalCount":4,"nodes":[
-	      {"__typename":"CheckRun","conclusion":"SKIPPED","status":"COMPLETED"},
-	      {"__typename":"CheckRun","conclusion":"SKIPPED","status":"COMPLETED"},
+	  "commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"PENDING",
+	    "contexts":{"totalCount":8,"nodes":[
 	      {"__typename":"CheckRun","conclusion":"SUCCESS","status":"COMPLETED"},
-	      {"__typename":"CheckRun","conclusion":"","status":"IN_PROGRESS"}
+	      {"__typename":"CheckRun","conclusion":"SUCCESS","status":"COMPLETED"},
+	      {"__typename":"CheckRun","conclusion":"SKIPPED","status":"COMPLETED"},
+	      {"__typename":"CheckRun","conclusion":"FAILURE","status":"COMPLETED"},
+	      {"__typename":"CheckRun","conclusion":"CANCELLED","status":"COMPLETED"},
+	      {"__typename":"CheckRun","conclusion":"","status":"IN_PROGRESS"},
+	      {"__typename":"StatusContext","state":"EXPECTED"},
+	      {"__typename":"StatusContext","state":"ERROR"}
 	    ]}}}}]}
 	}}}}`)
 
@@ -139,16 +142,71 @@ func TestParsePRChecksSalteadosCuentanComoPasados(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parsePRResponse: %v", err)
 	}
-	if pr.ChecksTotal != 4 {
-		t.Fatalf("total = %d", pr.ChecksTotal)
+	casos := map[string]struct{ got, want int }{
+		"success":   {pr.ChecksSuccess, 2},
+		"skipped":   {pr.ChecksSkipped, 1},
+		"failing":   {pr.ChecksFailing, 2}, // FAILURE del run + ERROR del status
+		"cancelled": {pr.ChecksCancelled, 1},
+		"pending":   {pr.ChecksPending, 1},
+		"expected":  {pr.ChecksExpected, 1},
 	}
-	if pr.ChecksPassed != 3 {
-		t.Fatalf("passed = %d, se esperaban 3 (2 salteados + 1 ok)", pr.ChecksPassed)
+	for nombre, c := range casos {
+		if c.got != c.want {
+			t.Errorf("%s = %d, se esperaba %d", nombre, c.got, c.want)
+		}
 	}
-	if pr.ChecksPending != 1 {
-		t.Fatalf("pending = %d, se esperaba 1", pr.ChecksPending)
+}
+
+// TestParsePRLasCategoriasSumanElTotal: si las categorías no cierran contra
+// ChecksTotal, la card muestra un desglose que no coincide con el número que
+// muestra GitHub. Por eso existe ChecksOther.
+func TestParsePRLasCategoriasSumanElTotal(t *testing.T) {
+	for _, f := range []string{"pr_open.json"} {
+		pr, err := parsePRResponse(fixture(t, f))
+		if err != nil {
+			t.Fatalf("%s: %v", f, err)
+		}
+		suma := pr.ChecksSuccess + pr.ChecksFailing + pr.ChecksPending +
+			pr.ChecksExpected + pr.ChecksSkipped + pr.ChecksCancelled +
+			pr.ChecksNeutral + pr.ChecksOther
+		if suma != pr.ChecksTotal {
+			t.Errorf("%s: las categorías suman %d y el total es %d", f, suma, pr.ChecksTotal)
+		}
 	}
-	if pr.ChecksFailing != 0 {
-		t.Fatalf("failing = %d", pr.ChecksFailing)
+}
+
+// TestCheckCategoryClasifica cubre la tabla completa, incluido lo que no
+// sabemos clasificar.
+func TestCheckCategoryClasifica(t *testing.T) {
+	casos := []struct {
+		typeName, conclusion, status, state string
+		want                                string
+	}{
+		{"CheckRun", "SUCCESS", "COMPLETED", "", "success"},
+		{"CheckRun", "SKIPPED", "COMPLETED", "", "skipped"},
+		{"CheckRun", "FAILURE", "COMPLETED", "", "failing"},
+		{"CheckRun", "TIMED_OUT", "COMPLETED", "", "failing"},
+		{"CheckRun", "ACTION_REQUIRED", "COMPLETED", "", "failing"},
+		{"CheckRun", "CANCELLED", "COMPLETED", "", "cancelled"},
+		{"CheckRun", "NEUTRAL", "COMPLETED", "", "neutral"},
+		{"CheckRun", "STALE", "COMPLETED", "", "neutral"},
+		{"CheckRun", "", "IN_PROGRESS", "", "pending"},
+		{"CheckRun", "", "QUEUED", "", "pending"},
+		// Un run que todavía corre no se clasifica por su conclusion vieja.
+		{"CheckRun", "SUCCESS", "IN_PROGRESS", "", "pending"},
+		{"CheckRun", "COSA_NUEVA", "COMPLETED", "", "other"},
+		{"StatusContext", "", "", "SUCCESS", "success"},
+		{"StatusContext", "", "", "FAILURE", "failing"},
+		{"StatusContext", "", "", "ERROR", "failing"},
+		{"StatusContext", "", "", "PENDING", "pending"},
+		{"StatusContext", "", "", "EXPECTED", "expected"},
+		{"StatusContext", "", "", "COSA_NUEVA", "other"},
+	}
+	for _, c := range casos {
+		got := checkCategory(c.typeName, c.conclusion, c.status, c.state)
+		if got != c.want {
+			t.Errorf("%s/%s/%s/%s = %q, se esperaba %q",
+				c.typeName, c.conclusion, c.status, c.state, got, c.want)
+		}
 	}
 }
