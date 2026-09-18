@@ -18,15 +18,15 @@ func TestSweepUsaLoQueReportaElClienteDePtys(t *testing.T) {
 
 	// Una fila "viva" que nunca se spawneó: exactamente lo que queda después
 	// de que el daemon arranque de nuevo.
-	huerfana := &store.Session{
+	orphan := &store.Session{
 		ID: store.NewID(), Cwd: t.TempDir(), Shell: "/bin/sh",
 		Cols: 80, Rows: 24, PtyStatus: store.StatusRunning,
 	}
-	if err := st.CreateSession(huerfana); err != nil {
+	if err := st.CreateSession(orphan); err != nil {
 		t.Fatal(err)
 	}
 	// Y una de verdad, que el sweep no debe tocar.
-	viva, err := m.Create(CreateOpts{Cwd: t.TempDir()})
+	alive, err := m.Create(CreateOpts{Cwd: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +35,7 @@ func TestSweepUsaLoQueReportaElClienteDePtys(t *testing.T) {
 		t.Fatalf("el sweep corrigió %d filas; quería 1", n)
 	}
 
-	got, err := st.GetSession(huerfana.ID)
+	got, err := st.GetSession(orphan.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,12 +47,12 @@ func TestSweepUsaLoQueReportaElClienteDePtys(t *testing.T) {
 			got.ExitReason)
 	}
 
-	sigue, err := st.GetSession(viva.ID)
+	still, err := st.GetSession(alive.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sigue.PtyStatus != store.StatusRunning {
-		t.Fatalf("el sweep se llevó puesta una sesión viva: %s", sigue.PtyStatus)
+	if still.PtyStatus != store.StatusRunning {
+		t.Fatalf("el sweep se llevó puesta una sesión viva: %s", still.PtyStatus)
 	}
 
 	// Idempotente: en la segunda pasada ya no hay nada que corregir.
@@ -65,18 +65,18 @@ func TestSweepUsaLoQueReportaElClienteDePtys(t *testing.T) {
 // spawn— también la levanta el sweep. Si no, queda así para siempre.
 func TestSweepLevantaFilasTrabadasEnStarting(t *testing.T) {
 	m, st := newTestManager(t)
-	trabada := &store.Session{
+	stuck := &store.Session{
 		ID: store.NewID(), Cwd: t.TempDir(), Shell: "/bin/sh",
 		Cols: 80, Rows: 24, PtyStatus: store.StatusStarting,
 	}
-	if err := st.CreateSession(trabada); err != nil {
+	if err := st.CreateSession(stuck); err != nil {
 		t.Fatal(err)
 	}
 
 	if n := m.Sweep(); n != 1 {
 		t.Fatalf("el sweep corrigió %d filas; quería 1", n)
 	}
-	got, _ := st.GetSession(trabada.ID)
+	got, _ := st.GetSession(stuck.ID)
 	if got.PtyStatus != store.StatusExited {
 		t.Fatalf("quedó %s; quería exited", got.PtyStatus)
 	}
@@ -112,12 +112,10 @@ func TestSweepNoPisaElMotivoDeUnaFilaYaMarcada(t *testing.T) {
 		}
 	}
 
-	// El sweep no corrigió nada: la fila ya estaba marcada por quien
-	// correspondía, y contarla sería reportar un trabajo que no hizo.
-	if n := m.Sweep(); n != 0 {
-		t.Fatalf("el sweep corrigió %d filas; quería 0", n)
-	}
+	n := m.Sweep()
 
+	// El motivo real primero: es la propiedad que este test nombra, y ante una
+	// regresión es el mensaje que hay que ver. El contador después.
 	got, err := st.GetSession(rec.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -128,6 +126,10 @@ func TestSweepNoPisaElMotivoDeUnaFilaYaMarcada(t *testing.T) {
 	if got.ExitReason != string(store.ReasonKilled) {
 		t.Fatalf("exit_reason = %q; el sweep pisó el motivo real con el suyo", got.ExitReason)
 	}
+	// Y no cuenta como corregida una fila que no tocó.
+	if n != 0 {
+		t.Fatalf("el sweep corrigió %d filas; quería 0", n)
+	}
 }
 
 // Con el arranque del daemon conocido, el sweep distingue las dos formas de
@@ -136,23 +138,23 @@ func TestSweepNoPisaElMotivoDeUnaFilaYaMarcada(t *testing.T) {
 func TestSweepDistingueOrphanedDeDaemonRestart(t *testing.T) {
 	st := newTestStore(t)
 	pty := session.NewManager(st, session.Config{HistoryBytes: 64 << 10})
-	arranque := time.Now().UnixMilli()
-	m := NewManager(st, pty, Config{Shell: "/bin/sh", DaemonStartedAt: arranque})
+	startedAt := time.Now().UnixMilli()
+	m := NewManager(st, pty, Config{Shell: "/bin/sh", DaemonStartedAt: startedAt})
 	t.Cleanup(func() {
 		_ = m.Close()
 		_ = pty.Close()
 		_ = st.Close()
 	})
 
-	vieja := &store.Session{
+	older := &store.Session{
 		ID: store.NewID(), Cwd: t.TempDir(), Shell: "/bin/sh", Cols: 80, Rows: 24,
-		PtyStatus: store.StatusRunning, CreatedAt: arranque - 1000,
+		PtyStatus: store.StatusRunning, CreatedAt: startedAt - 1000,
 	}
-	nueva := &store.Session{
+	newer := &store.Session{
 		ID: store.NewID(), Cwd: t.TempDir(), Shell: "/bin/sh", Cols: 80, Rows: 24,
-		PtyStatus: store.StatusRunning, CreatedAt: arranque + 1000,
+		PtyStatus: store.StatusRunning, CreatedAt: startedAt + 1000,
 	}
-	for _, rec := range []*store.Session{vieja, nueva} {
+	for _, rec := range []*store.Session{older, newer} {
 		if err := st.CreateSession(rec); err != nil {
 			t.Fatal(err)
 		}
@@ -162,11 +164,11 @@ func TestSweepDistingueOrphanedDeDaemonRestart(t *testing.T) {
 		t.Fatalf("el sweep corrigió %d filas; quería 2", n)
 	}
 
-	got, _ := st.GetSession(vieja.ID)
+	got, _ := st.GetSession(older.ID)
 	if got.ExitReason != string(store.ReasonDaemonRestart) {
 		t.Fatalf("la fila anterior al arranque quedó %q; quería daemon_restart", got.ExitReason)
 	}
-	got, _ = st.GetSession(nueva.ID)
+	got, _ = st.GetSession(newer.ID)
 	if got.ExitReason != string(store.ReasonOrphaned) {
 		t.Fatalf("la fila posterior al arranque quedó %q; quería orphaned", got.ExitReason)
 	}
@@ -201,26 +203,26 @@ func TestAttachASesionMuertaEsDeSoloLectura(t *testing.T) {
 	if err := att.Write([]byte("echo MARCA-HISTORIAL\n")); err != nil {
 		t.Fatal(err)
 	}
-	esperarOutput(t, att, "MARCA-HISTORIAL")
+	waitForOutput(t, att, "MARCA-HISTORIAL")
 	att.Detach()
 
 	if err := m.Kill(rec.ID); err != nil {
 		t.Fatal(err)
 	}
 
-	muerta, err := m.Attach(rec.ID)
+	dead, err := m.Attach(rec.ID)
 	if err != nil {
 		t.Fatalf("attach a sesión muerta tendría que funcionar: %v", err)
 	}
-	defer muerta.Detach()
-	if muerta.Live {
+	defer dead.Detach()
+	if dead.Live {
 		t.Fatal("Live = true en una sesión muerta")
 	}
-	if muerta.Output() != nil {
+	if dead.Output() != nil {
 		t.Fatal("una sesión muerta no tiene stream vivo")
 	}
-	if !bytes.Contains(muerta.History, []byte("MARCA-HISTORIAL")) {
-		t.Fatalf("el historial no sobrevivió al kill: %q", muerta.History)
+	if !bytes.Contains(dead.History, []byte("MARCA-HISTORIAL")) {
+		t.Fatalf("el historial no sobrevivió al kill: %q", dead.History)
 	}
 }
 
@@ -240,29 +242,29 @@ func TestAttachASesionMuerta(t *testing.T) {
 	if err := att.Write([]byte("echo antes-de-morir\n")); err != nil {
 		t.Fatal(err)
 	}
-	esperarOutput(t, att, "antes-de-morir")
+	waitForOutput(t, att, "antes-de-morir")
 	if err := att.Write([]byte("exit\n")); err != nil {
 		t.Fatal(err)
 	}
-	esperarCierre(t, att)
+	waitForClose(t, att)
 	att.Detach()
 
-	muerta, err := m.Attach(rec.ID)
+	dead, err := m.Attach(rec.ID)
 	if err != nil {
 		t.Fatalf("Attach a sesión muerta: %v", err)
 	}
-	defer muerta.Detach()
-	if muerta.Live {
+	defer dead.Detach()
+	if dead.Live {
 		t.Fatal("Live tendría que ser false")
 	}
-	if muerta.Output() != nil {
+	if dead.Output() != nil {
 		t.Fatal("una sesión muerta no tiene stream vivo")
 	}
-	if !bytes.Contains(muerta.History, []byte("antes-de-morir")) {
-		t.Fatalf("el historial no sobrevivió: %q", tail(muerta.History, 200))
+	if !bytes.Contains(dead.History, []byte("antes-de-morir")) {
+		t.Fatalf("el historial no sobrevivió: %q", tail(dead.History, 200))
 	}
 	// El input a una sesión muerta no revive nada.
-	if err := muerta.Write([]byte("echo tarde\n")); err == nil {
+	if err := dead.Write([]byte("echo tarde\n")); err == nil {
 		t.Fatal("escribir a una sesión muerta tendría que fallar")
 	}
 }
@@ -299,11 +301,11 @@ func TestCreateConShellInvalidoNoDejaLaFilaEnStarting(t *testing.T) {
 	}
 	// Create devuelve error pero la fila queda, marcada, para que el error se
 	// vea en la UI. Buscamos la única fila que haya.
-	list, lerr := st.ListSessions()
-	if lerr != nil || len(list) != 1 {
-		t.Fatalf("esperaba una fila; list=%v err=%v", list, lerr)
+	rows, lerr := st.ListSessions()
+	if lerr != nil || len(rows) != 1 {
+		t.Fatalf("esperaba una fila; filas=%v err=%v", rows, lerr)
 	}
-	got := list[0]
+	got := rows[0]
 	if rec != nil && got.ID != rec.ID {
 		t.Fatalf("la fila no es la de la sesión creada")
 	}
@@ -334,30 +336,30 @@ func TestRestartReusaLaFila(t *testing.T) {
 	if err := att.Write([]byte("echo antes-del-restart\n")); err != nil {
 		t.Fatal(err)
 	}
-	esperarOutput(t, att, "antes-del-restart")
+	waitForOutput(t, att, "antes-del-restart")
 	att.Detach()
 	if err := m.Kill(rec.ID); err != nil {
 		t.Fatalf("Kill: %v", err)
 	}
 
-	vuelto, err := m.Restart(rec.ID, 100, 30)
+	resumed, err := m.Restart(rec.ID, 100, 30)
 	if err != nil {
 		t.Fatalf("Restart: %v", err)
 	}
-	if vuelto.ID != rec.ID {
-		t.Fatalf("Restart cambió el id: %s -> %s", rec.ID, vuelto.ID)
+	if resumed.ID != rec.ID {
+		t.Fatalf("Restart cambió el id: %s -> %s", rec.ID, resumed.ID)
 	}
-	if vuelto.Title != "con historia" {
-		t.Fatalf("se perdió el título: %q", vuelto.Title)
+	if resumed.Title != "con historia" {
+		t.Fatalf("se perdió el título: %q", resumed.Title)
 	}
-	if vuelto.PtyStatus != store.StatusRunning {
-		t.Fatalf("pty_status = %q", vuelto.PtyStatus)
+	if resumed.PtyStatus != store.StatusRunning {
+		t.Fatalf("pty_status = %q", resumed.PtyStatus)
 	}
-	if vuelto.ExitReason != "" || vuelto.ExitCode != nil {
-		t.Fatalf("quedaron rastros de la muerte anterior: %+v", vuelto)
+	if resumed.ExitReason != "" || resumed.ExitCode != nil {
+		t.Fatalf("quedaron rastros de la muerte anterior: %+v", resumed)
 	}
-	if vuelto.Cols != 100 || vuelto.Rows != 30 {
-		t.Fatalf("el restart no tomó el tamaño nuevo: %dx%d", vuelto.Cols, vuelto.Rows)
+	if resumed.Cols != 100 || resumed.Rows != 30 {
+		t.Fatalf("el restart no tomó el tamaño nuevo: %dx%d", resumed.Cols, resumed.Rows)
 	}
 
 	kv, _ := st.ListKV(rec.ID)
@@ -384,7 +386,7 @@ func TestRestartReusaLaFila(t *testing.T) {
 	if err := att2.Write([]byte("echo despues-del-restart\n")); err != nil {
 		t.Fatal(err)
 	}
-	esperarOutput(t, att2, "despues-del-restart")
+	waitForOutput(t, att2, "despues-del-restart")
 }
 
 func TestRestartSobreSesionViva(t *testing.T) {
@@ -419,7 +421,7 @@ func TestFinDeStreamPorSesionTerminada(t *testing.T) {
 	if err := att.Write([]byte("exit\n")); err != nil {
 		t.Fatal(err)
 	}
-	esperarCierre(t, att)
+	waitForClose(t, att)
 
 	end := att.End()
 	if !end.Exited {
@@ -447,7 +449,7 @@ func TestFinDeStreamConLaSesionViva(t *testing.T) {
 	// Detach corta el stream de este cliente sin tocar la sesión: es la misma
 	// forma que tiene un cliente expulsado.
 	att.Detach()
-	esperarCierre(t, att)
+	waitForClose(t, att)
 
 	end := att.End()
 	if end.Exited {

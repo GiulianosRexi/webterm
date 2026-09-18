@@ -76,22 +76,36 @@ func (a *Attachment) Dropped() bool {
 //
 // Vale la pena consultarlo recién después de que Output() se haya cerrado.
 type StreamEnd struct {
-	// Session es la fila releída. Es nil si la sesión se borró mientras tanto.
+	// Session es la fila releída. Es nil si la sesión se borró mientras el
+	// cliente miraba, o si la base no se pudo leer (ver Err).
 	Session *store.Session
 	// Exited dice que la sesión terminó de verdad, no que se cortó el stream.
 	Exited bool
 	// Dropped es lo que alcanzó a decir el transporte. Solo sirve para
 	// enriquecer el mensaje al usuario; no para decidir.
 	Dropped bool
+	// Err es el error de leer la fila, si lo hubo. Con Err != nil no sabemos
+	// nada: ni Exited ni Session significan algo, y decirle al usuario "te
+	// expulsamos" sería inventar. Se distingue de la fila borrada —Session nil
+	// con Err nil— justamente para que quien llama pueda no inventar.
+	Err error
 }
 
 // End explica por qué se terminó el stream, leyendo la fila.
 func (a *Attachment) End() StreamEnd {
 	end := StreamEnd{Dropped: a.Dropped()}
 	rec, err := a.m.st.GetSession(a.Session.ID)
-	if err != nil {
-		// La fila no está: la sesión se borró mientras el cliente miraba. No
-		// es "terminó", es "ya no existe", y quien nos llama tiene el id.
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		// La sesión se borró mientras el cliente miraba. No es "terminó", es
+		// "ya no existe", y quien nos llama tiene el id.
+		return end
+	case err != nil:
+		// No pudimos saber. Es distinto de las otras dos ramas y el que llama
+		// tiene que poder notarlo.
+		log.Printf("[%s] no se pudo leer la fila para explicar el fin del stream: %v",
+			a.Session.ID, err)
+		end.Err = err
 		return end
 	}
 	end.Session = rec

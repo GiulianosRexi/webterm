@@ -40,8 +40,8 @@ func newTestManager(t *testing.T) (*Manager, *store.Store) {
 	return m, st
 }
 
-// esperarOutput drena el stream hasta encontrar la marca.
-func esperarOutput(t *testing.T, att *Attachment, marca string) {
+// waitForOutput drena el stream hasta encontrar la marca.
+func waitForOutput(t *testing.T, att *Attachment, mark string) {
 	t.Helper()
 	var buf bytes.Buffer
 	deadline := time.After(15 * time.Second)
@@ -49,23 +49,23 @@ func esperarOutput(t *testing.T, att *Attachment, marca string) {
 		select {
 		case chunk, ok := <-att.Output():
 			if !ok {
-				t.Fatalf("el stream cerró antes de %q; junté %q", marca, buf.String())
+				t.Fatalf("el stream cerró antes de %q; junté %q", mark, buf.String())
 			}
 			buf.Write(chunk)
-			if bytes.Contains(buf.Bytes(), []byte(marca)) {
+			if bytes.Contains(buf.Bytes(), []byte(mark)) {
 				return
 			}
 		case <-deadline:
-			t.Fatalf("timeout esperando %q; junté %q", marca, buf.String())
+			t.Fatalf("timeout esperando %q; junté %q", mark, buf.String())
 		}
 	}
 }
 
-// esperarCierre drena hasta que el stream cierre, que es la señal de que la
+// waitForClose drena hasta que el stream cierre, que es la señal de que la
 // sesión terminó. No hace falta esperar a nada más: quien tiene los ptys marca
 // la fila ANTES de cerrarle el canal a los clientes, así que cuando esto
 // vuelve, la base ya dice exited.
-func esperarCierre(t *testing.T, att *Attachment) {
+func waitForClose(t *testing.T, att *Attachment) {
 	t.Helper()
 	deadline := time.After(15 * time.Second)
 	for {
@@ -143,8 +143,8 @@ func TestUpdateMeta(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	nuevo := "nueva"
-	got, err := m.UpdateMeta(rec.ID, store.MetaPatch{Title: &nuevo})
+	updated := "nueva"
+	got, err := m.UpdateMeta(rec.ID, store.MetaPatch{Title: &updated})
 	if err != nil {
 		t.Fatalf("UpdateMeta: %v", err)
 	}
@@ -180,7 +180,7 @@ func TestDeleteBorraTodo(t *testing.T) {
 	if err := att.Write([]byte("echo hola\n")); err != nil {
 		t.Fatal(err)
 	}
-	esperarOutput(t, att, "hola")
+	waitForOutput(t, att, "hola")
 	att.Detach()
 
 	if err := m.Delete(rec.ID); err != nil {
@@ -254,5 +254,69 @@ func TestSpawnSiempreMandaShellYCwdDeLaFila(t *testing.T) {
 	if o := spy.lastOpts(); o.Shell != rec.Shell || o.Cwd != rec.Cwd {
 		t.Fatalf("Restart spawneó con shell=%q cwd=%q; quería los de la fila (%q, %q)",
 			o.Shell, o.Cwd, rec.Shell, rec.Cwd)
+	}
+}
+
+// Config.ExtraEnv es el mecanismo con el que se justifica el invariante de M10:
+// sumarle una variable al entorno de cada pty —el token que el MCP necesita, por
+// ejemplo— sin tocar el daemon, que no sabe ni tiene que saber qué es un token.
+//
+// El test va de punta a punta a propósito. Que SpawnOpts.Env llegue al entorno
+// del pty ya está probado en internal/session; lo que no estaba probado es la
+// unión, que es justamente el cable que se puede borrar sin que nada se ponga
+// rojo: el agente que corre adentro del pty se quedaría sin token en silencio.
+func TestExtraEnvLlegaAlEntornoDelPty(t *testing.T) {
+	st := newTestStore(t)
+	pty := session.NewManager(st, session.Config{HistoryBytes: 64 << 10})
+	spy := &spyPty{Client: pty}
+	m := NewManager(st, spy, Config{
+		Shell:    "/bin/sh",
+		ExtraEnv: []string{"WEBTERM_TEST_TOKEN=valor-del-token"},
+	})
+	t.Cleanup(func() {
+		_ = m.Close()
+		_ = pty.Close()
+		_ = st.Close()
+	})
+
+	rec, err := m.Create(CreateOpts{Cwd: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if env := spy.lastOpts().Env; len(env) != 1 || env[0] != "WEBTERM_TEST_TOKEN=valor-del-token" {
+		t.Fatalf("el SpawnOpts salió con Env=%v; quería el ExtraEnv de la Config", env)
+	}
+
+	att, err := m.Attach(rec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer att.Detach()
+	// El corchete evita confundir el eco del propio comando con su salida: lo
+	// que se tipea lleva el nombre de la variable, no su valor.
+	if err := att.Write([]byte("echo \"TOKEN=[$WEBTERM_TEST_TOKEN]\"\n")); err != nil {
+		t.Fatal(err)
+	}
+	waitForOutput(t, att, "TOKEN=[valor-del-token]")
+}
+
+// El cwd resuelto tiene que quedar siempre en la fila y en el SpawnOpts. Si se
+// va vacío, quien tiene los ptys cae a su propio $HOME —con el daemon aparte,
+// el equivocado— y la columna cwd pasa a mentir sobre dónde corre el proceso.
+func TestCreateSinHomeNoDejaElCwdVacio(t *testing.T) {
+	// Sin HOME, os.UserHomeDir falla: es la única forma de provocar el caso.
+	t.Setenv("HOME", "")
+
+	m, st := newTestManager(t)
+	rec, err := m.Create(CreateOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.GetSession(rec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Cwd != "/" {
+		t.Fatalf("cwd = %q; quería / (el fallback honesto)", got.Cwd)
 	}
 }

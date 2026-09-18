@@ -136,7 +136,22 @@ func (m *Manager) Create(o CreateOpts) (*store.Session, error) {
 	}
 	cwd := o.Cwd
 	if cwd == "" {
-		cwd, _ = os.UserHomeDir()
+		home, err := os.UserHomeDir()
+		if err != nil {
+			// El cwd resuelto tiene que quedar SIEMPRE en la fila y en el
+			// SpawnOpts. Un cwd vacío no falla: cae al $HOME del proceso que
+			// tiene los ptys (ver terminal.New), que con el daemon aparte es
+			// el equivocado, y la columna cwd de la fila pasa a mentir sobre
+			// dónde corre el proceso. Es el mismo modo de falla que Shell.
+			//
+			// Caemos a "/" en vez de propagar el error porque no saber el home
+			// no es motivo para no poder abrir una terminal: "/" siempre
+			// existe, es un cwd válido, y sobre todo es cierto. Un directorio
+			// raro pero honesto es mejor que un dato corrupto.
+			log.Printf("no se pudo resolver el home; la sesión arranca en /: %v", err)
+			home = "/"
+		}
+		cwd = home
 	}
 
 	rec := &store.Session{
@@ -191,11 +206,11 @@ func (m *Manager) Restart(id string, cols, rows int) (*store.Session, error) {
 	}
 	// La fuente de verdad de "está viva" es el daemon, no la fila: la fila
 	// puede estar desactualizada por la ventana entre la muerte y el reap.
-	vivas, err := m.pty.LiveIDs()
+	liveIDs, err := m.pty.LiveIDs()
 	if err != nil {
 		return nil, err
 	}
-	for _, vid := range vivas {
+	for _, vid := range liveIDs {
 		if vid == id {
 			return nil, ErrAlreadyRunning
 		}
@@ -257,27 +272,27 @@ func (m *Manager) Delete(id string) error {
 // no aparecería en LiveIDs (leído antes de que naciera) pero sí en ActiveIDs
 // (leído después), y el sweep marcaría muerta una sesión viva.
 func (m *Manager) Sweep() int {
-	activos, err := m.st.ActiveIDs()
+	active, err := m.st.ActiveIDs()
 	if err != nil {
 		log.Printf("sweep: %v", err)
 		return 0
 	}
-	if len(activos) == 0 {
+	if len(active) == 0 {
 		return 0
 	}
-	vivas, err := m.pty.LiveIDs()
+	liveIDs, err := m.pty.LiveIDs()
 	if err != nil {
 		log.Printf("sweep: no se pudo consultar al daemon: %v", err)
 		return 0
 	}
-	viva := make(map[string]bool, len(vivas))
-	for _, id := range vivas {
-		viva[id] = true
+	live := make(map[string]bool, len(liveIDs))
+	for _, id := range liveIDs {
+		live[id] = true
 	}
 
 	n := 0
-	for _, id := range activos {
-		if viva[id] {
+	for _, id := range active {
+		if live[id] {
 			continue
 		}
 		// La guarda del UPDATE es lo que hace inofensiva la ventana entre las
@@ -285,12 +300,12 @@ func (m *Manager) Sweep() int {
 		// exit_reason real —normal, killed— escrito por el reap, y este UPDATE
 		// no la toca. Sin la guarda, el sweep le pisaría el motivo con el suyo
 		// y el usuario vería un dato corrupto en la UI.
-		marcada, err := m.st.MarkExitedIfActive(id, m.reasonFor(id), nil)
+		marked, err := m.st.MarkExitedIfActive(id, m.reasonFor(id), nil)
 		if err != nil {
 			log.Printf("sweep [%s]: %v", id, err)
 			continue
 		}
-		if !marcada {
+		if !marked {
 			// Alguien llegó antes: la fila ya no estaba activa. Es el caso
 			// normal de la carrera, no un error.
 			continue
