@@ -96,6 +96,7 @@ func parsePRRef(ref Ref) (owner, repo string, number int, err error) {
 const prQuery = `
 query($owner:String!, $name:String!, $number:Int!) {
   repository(owner:$owner, name:$name) {
+    nameWithOwner
     pullRequest(number:$number) {
       number title url state isDraft mergeable reviewDecision
       author { login }

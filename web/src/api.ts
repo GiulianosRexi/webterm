@@ -68,6 +68,7 @@ export const api = {
 
 export interface PRState {
   number: number
+  repo: string
   title: string
   author: string
   state: 'OPEN' | 'CLOSED' | 'MERGED'
@@ -78,7 +79,9 @@ export interface PRState {
   threads_truncated: boolean
   checks_state: string
   checks_total: number
+  checks_passed: number
   checks_failing: number
+  checks_pending: number
 }
 
 export interface Snapshot {

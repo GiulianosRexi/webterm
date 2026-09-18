@@ -1,4 +1,4 @@
-{"data":{"repository":{"pullRequest":{
+{"data":{"repository":{"nameWithOwner":"cli/cli","pullRequest":{
   "number":14456,
   "title":"Refreshable tokens (7/7): guided end-to-end verification scripts",
   "url":"https://github.com/cli/cli/pull/14456",

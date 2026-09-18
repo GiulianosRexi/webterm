@@ -25,6 +25,9 @@ func TestParsePROpenConChecks(t *testing.T) {
 	if pr.Number != 14456 || pr.Author != "babakks" {
 		t.Fatalf("cabecera mal: %+v", pr)
 	}
+	if pr.Repo != "cli/cli" {
+		t.Fatalf("repo = %q", pr.Repo)
+	}
 	if pr.State != "OPEN" || pr.IsDraft || pr.Mergeable != "MERGEABLE" {
 		t.Fatalf("estado mal: %+v", pr)
 	}
@@ -37,6 +40,10 @@ func TestParsePROpenConChecks(t *testing.T) {
 	// FAILURE del CheckRun y ERROR del StatusContext cuentan; SKIPPED no.
 	if pr.ChecksFailing != 2 {
 		t.Fatalf("checks_failing = %d, se esperaban 2", pr.ChecksFailing)
+	}
+	// SKIPPED y SUCCESS pasan; el que está corriendo queda pendiente.
+	if pr.ChecksPassed != 2 || pr.ChecksPending != 0 {
+		t.Fatalf("passed=%d pending=%d", pr.ChecksPassed, pr.ChecksPending)
 	}
 	if pr.UnresolvedCount != 0 {
 		t.Fatalf("unresolved = %d", pr.UnresolvedCount)
@@ -107,5 +114,41 @@ func TestParsePRThreadsTruncados(t *testing.T) {
 	}
 	if pr.UnresolvedCount != 100 || !pr.ThreadsTruncated {
 		t.Fatalf("unresolved=%d truncated=%v", pr.UnresolvedCount, pr.ThreadsTruncated)
+	}
+}
+
+// TestParsePRChecksSalteadosCuentanComoPasados es el caso que hace la
+// diferencia entre una card útil y una que miente: un PR sano con muchos
+// checks condicionales tiene la mayoría en SKIPPED. Contar solo los SUCCESS
+// lo mostraría como "7/20" y parecería roto.
+func TestParsePRChecksSalteadosCuentanComoPasados(t *testing.T) {
+	body := []byte(`{"data":{"repository":{"nameWithOwner":"cli/cli","pullRequest":{
+	  "number":1,"title":"t","url":"u","state":"OPEN","isDraft":false,
+	  "mergeable":"MERGEABLE","reviewDecision":"","author":{"login":"a"},
+	  "reviewThreads":{"totalCount":0,"nodes":[]},
+	  "commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"SUCCESS",
+	    "contexts":{"totalCount":4,"nodes":[
+	      {"__typename":"CheckRun","conclusion":"SKIPPED","status":"COMPLETED"},
+	      {"__typename":"CheckRun","conclusion":"SKIPPED","status":"COMPLETED"},
+	      {"__typename":"CheckRun","conclusion":"SUCCESS","status":"COMPLETED"},
+	      {"__typename":"CheckRun","conclusion":"","status":"IN_PROGRESS"}
+	    ]}}}}]}
+	}}}}`)
+
+	pr, err := parsePRResponse(body)
+	if err != nil {
+		t.Fatalf("parsePRResponse: %v", err)
+	}
+	if pr.ChecksTotal != 4 {
+		t.Fatalf("total = %d", pr.ChecksTotal)
+	}
+	if pr.ChecksPassed != 3 {
+		t.Fatalf("passed = %d, se esperaban 3 (2 salteados + 1 ok)", pr.ChecksPassed)
+	}
+	if pr.ChecksPending != 1 {
+		t.Fatalf("pending = %d, se esperaba 1", pr.ChecksPending)
+	}
+	if pr.ChecksFailing != 0 {
+		t.Fatalf("failing = %d", pr.ChecksFailing)
 	}
 }

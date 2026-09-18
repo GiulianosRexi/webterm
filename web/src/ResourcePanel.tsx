@@ -1,5 +1,15 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api, type LinkedResource, type PRState } from './api'
+import {
+  IconCheck,
+  IconClock,
+  IconClosed,
+  IconComment,
+  IconDraft,
+  IconMerged,
+  IconOpen,
+  IconX,
+} from './prIcons'
 
 // Cada cuánto se refresca mientras el panel está abierto. El backend cachea
 // 30 s, así que este polling no se traduce uno a uno en llamadas a GitHub.
@@ -111,9 +121,12 @@ function ResourceCard({
   return (
     <article className="resource-card">
       <header>
-        <a href={item.ref} target="_blank" rel="noreferrer">
-          {pr ? `#${pr.number} ${pr.title}` : item.ref}
-        </a>
+        <div className="titles">
+          {pr?.repo && <span className="repo">{pr.repo}</span>}
+          <a href={item.ref} target="_blank" rel="noreferrer">
+            {pr ? `#${pr.number} ${pr.title}` : item.ref}
+          </a>
+        </div>
         <button className="danger" onClick={onUnlink} disabled={busy} title="Deslinkear">
           ✕
         </button>
@@ -129,68 +142,103 @@ function ResourceCard({
 function PRBadges({ pr }: { pr: PRState }) {
   return (
     <p className="badges">
-      <span className="badge" data-value={prState(pr)}>
-        {prStateLabel(pr)}
-      </span>
-      <span className="badge" data-value={pr.review_decision || 'NONE'}>
-        {reviewLabel(pr.review_decision)}
-      </span>
-      {pr.checks_state && (
-        <span className="badge" data-value={checksValue(pr)}>
-          {checksLabel(pr)}
-        </span>
-      )}
-      <span className="badge" data-value={pr.unresolved_count > 0 ? 'threads' : 'clean'}>
-        {pr.unresolved_count === 0
-          ? 'sin comments pendientes'
-          : `${pr.unresolved_count}${pr.threads_truncated ? '+' : ''} sin resolver`}
-      </span>
+      <StateBadge pr={pr} />
+      <ReviewBadge decision={pr.review_decision} />
+      {pr.checks_state && <ChecksBadge pr={pr} />}
+      <CommentsBadge pr={pr} />
     </p>
   )
 }
 
-function prState(pr: PRState): string {
-  return pr.is_draft && pr.state === 'OPEN' ? 'DRAFT' : pr.state
-}
-
-function prStateLabel(pr: PRState): string {
-  switch (prState(pr)) {
-    case 'DRAFT':
-      return 'borrador'
-    case 'OPEN':
-      return pr.mergeable === 'CONFLICTING' ? 'abierto · conflictos' : 'abierto'
-    case 'MERGED':
-      return 'mergeado'
-    default:
-      return 'cerrado'
+// StateBadge usa la paleta de GitHub para que el color signifique lo mismo que
+// allá: violeta mergeado, verde abierto, rojo cerrado, gris borrador.
+function StateBadge({ pr }: { pr: PRState }) {
+  if (pr.state === 'MERGED') {
+    return (
+      <span className="badge icon-only" data-state="merged">
+        <IconMerged title="Mergeado" />
+      </span>
+    )
   }
+  if (pr.state === 'CLOSED') {
+    return (
+      <span className="badge icon-only" data-state="closed">
+        <IconClosed title="Cerrado sin mergear" />
+      </span>
+    )
+  }
+  if (pr.is_draft) {
+    return (
+      <span className="badge icon-only" data-state="draft">
+        <IconDraft title="Borrador" />
+      </span>
+    )
+  }
+  const conflictos = pr.mergeable === 'CONFLICTING'
+  return (
+    <span className="badge icon-only" data-state={conflictos ? 'closed' : 'open'}>
+      <IconOpen title={conflictos ? 'Abierto, con conflictos' : 'Abierto'} />
+    </span>
+  )
 }
 
-function reviewLabel(decision: string): string {
+function ReviewBadge({ decision }: { decision: string }) {
   switch (decision) {
     case 'APPROVED':
-      return 'aprobado'
+      return (
+        <span className="badge icon-only" data-state="open">
+          <IconCheck title="Aprobado" />
+        </span>
+      )
     case 'CHANGES_REQUESTED':
-      return 'cambios pedidos'
+      return (
+        <span className="badge icon-only" data-state="closed">
+          <IconX title="Cambios pedidos" />
+        </span>
+      )
     case 'REVIEW_REQUIRED':
-      return 'falta review'
+      return (
+        <span className="badge icon-only" data-state="draft">
+          <IconClock title="Falta review" />
+        </span>
+      )
     default:
-      return 'sin review'
+      return (
+        <span className="badge icon-only" data-state="draft">
+          <IconClock title="Sin review todavía" />
+        </span>
+      )
   }
 }
 
-// checksValue prioriza lo que contamos nosotros por sobre el rollup: si hay
-// checks fallando se pinta en rojo aunque el rollup diga otra cosa.
-function checksValue(pr: PRState): string {
-  if (pr.checks_failing > 0) return 'FAILURE'
-  if (pr.checks_state === 'PENDING') return 'PENDING'
-  return pr.checks_state
+// ChecksBadge muestra pasados/total del último commit. Los salteados cuentan
+// como pasados: un PR sano con checks condicionales tiene la mayoría en
+// SKIPPED, y contarlos como pendientes lo haría ver roto.
+function ChecksBadge({ pr }: { pr: PRState }) {
+  const estado =
+    pr.checks_failing > 0 ? 'closed' : pr.checks_pending > 0 ? 'draft' : 'open'
+  const detalle =
+    pr.checks_failing > 0
+      ? `${pr.checks_failing} fallando de ${pr.checks_total}`
+      : pr.checks_pending > 0
+        ? `${pr.checks_pending} corriendo de ${pr.checks_total}`
+        : `${pr.checks_total} checks del último commit`
+  return (
+    <span className="badge" data-state={estado} title={`Checks: ${detalle}`}>
+      {pr.checks_passed}/{pr.checks_total} checks
+    </span>
+  )
 }
 
-function checksLabel(pr: PRState): string {
-  if (pr.checks_failing > 0) return `${pr.checks_failing} de ${pr.checks_total} fallando`
-  if (pr.checks_state === 'PENDING') return 'checks corriendo'
-  return `${pr.checks_total} checks ok`
+function CommentsBadge({ pr }: { pr: PRState }) {
+  if (pr.unresolved_count === 0) return null
+  const n = `${pr.unresolved_count}${pr.threads_truncated ? '+' : ''}`
+  return (
+    <span className="badge" data-state="closed" title={`${n} comments sin resolver`}>
+      <IconComment title="Comments sin resolver" />
+      {n}
+    </span>
+  )
 }
 
 // Freshness marca la edad del dato. Un check en verde de hace veinte minutos

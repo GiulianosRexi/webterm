@@ -25,6 +25,7 @@ type Ref struct {
 // PRState es el estado de un pull request de GitHub.
 type PRState struct {
 	Number         int    `json:"number"`
+	Repo           string `json:"repo"` // owner/repo
 	Title          string `json:"title"`
 	Author         string `json:"author"`
 	State          string `json:"state"` // OPEN | CLOSED | MERGED
@@ -35,11 +36,20 @@ type PRState struct {
 	UnresolvedCount  int  `json:"unresolved_count"`
 	ThreadsTruncated bool `json:"threads_truncated"`
 
+	// Los checks son los del último commit del PR: la query pide
+	// commits(last:1), porque los de un commit anterior ya no dicen nada
+	// sobre el estado actual.
+	//
 	// ChecksState queda vacío cuando el PR no tiene checks o cuando ya
 	// expiraron, que es lo que devuelve la API en PRs viejos.
-	ChecksState   string `json:"checks_state"` // SUCCESS | FAILURE | PENDING | ""
-	ChecksTotal   int    `json:"checks_total"`
-	ChecksFailing int    `json:"checks_failing"`
+	ChecksState string `json:"checks_state"` // SUCCESS | FAILURE | PENDING | ""
+	ChecksTotal int    `json:"checks_total"`
+	// ChecksPassed cuenta todo lo que no está fallando ni corriendo, así que
+	// incluye los salteados. Contar solo los SUCCESS haría que un PR sano con
+	// muchos checks condicionales se vea como si estuviera roto.
+	ChecksPassed  int `json:"checks_passed"`
+	ChecksFailing int `json:"checks_failing"`
+	ChecksPending int `json:"checks_pending"`
 }
 
 // Snapshot es el estado de un recurso en un momento dado. Error y PR son

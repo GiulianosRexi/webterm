@@ -7,6 +7,12 @@
   --accent: #5ac8a8;
   --danger: #e2696b;
   --warn: #d9b06a;
+  /* Paleta de estados de GitHub (Primer, modo oscuro), para que el color
+     signifique acá lo mismo que en el PR. */
+  --gh-open: #3fb950;
+  --gh-merged: #a371f7;
+  --gh-closed: #f85149;
+  --gh-draft: #848d97;
   font-family: ui-sans-serif, -apple-system, "SF Pro Text", system-ui, sans-serif;
 }
 
@@ -295,8 +301,23 @@ button:hover,
   gap: 8px;
 }
 
-.resource-card header a {
+.resource-card .titles {
   flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.resource-card .repo {
+  color: var(--fg-dim);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.resource-card header a {
   color: var(--fg);
   text-decoration: none;
   overflow: hidden;
@@ -309,31 +330,39 @@ button:hover,
 .badges {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 6px;
   margin: 8px 0 0;
 }
 
 .badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 1px 8px;
   font-size: 11px;
   color: var(--fg-dim);
+  line-height: 1.7;
 }
 
-.badge[data-value="OPEN"],
-.badge[data-value="MERGED"],
-.badge[data-value="APPROVED"],
-.badge[data-value="SUCCESS"],
-.badge[data-value="clean"] { border-color: var(--accent); color: var(--accent); }
+/* Un badge que es solo icono se dibuja redondo, sin el ancho del texto. */
+.badge.icon-only {
+  padding: 3px;
+  border-radius: 50%;
+}
 
-.badge[data-value="CHANGES_REQUESTED"],
-.badge[data-value="FAILURE"],
-.badge[data-value="threads"] { border-color: var(--danger); color: var(--danger); }
+.badge .icon {
+  width: 13px;
+  height: 13px;
+  display: block;
+}
 
-.badge[data-value="PENDING"],
-.badge[data-value="DRAFT"],
-.badge[data-value="REVIEW_REQUIRED"] { border-color: var(--warn); color: var(--warn); }
+.badge[data-state="open"] { border-color: var(--gh-open); color: var(--gh-open); }
+.badge[data-state="merged"] { border-color: var(--gh-merged); color: var(--gh-merged); }
+.badge[data-state="closed"] { border-color: var(--gh-closed); color: var(--gh-closed); }
+.badge[data-state="draft"] { border-color: var(--gh-draft); color: var(--gh-draft); }
 
 .resource-error {
   margin: 6px 0 0;

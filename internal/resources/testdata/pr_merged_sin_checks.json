@@ -1,4 +1,4 @@
-{"data":{"repository":{"pullRequest":{
+{"data":{"repository":{"nameWithOwner":"cli/cli","pullRequest":{
   "number":9000,
   "title":"proof of concept for flag-level disable auth check",
   "url":"https://github.com/cli/cli/pull/9000",

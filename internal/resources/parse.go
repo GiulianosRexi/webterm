@@ -14,7 +14,8 @@ var ErrRemote = errors.New("el sistema externo devolvió un error")
 type prResponse struct {
 	Data struct {
 		Repository *struct {
-			PullRequest *struct {
+			NameWithOwner string `json:"nameWithOwner"`
+			PullRequest   *struct {
 				Number         int    `json:"number"`
 				Title          string `json:"title"`
 				URL            string `json:"url"`
@@ -42,6 +43,7 @@ type prResponse struct {
 									Nodes      []struct {
 										TypeName   string `json:"__typename"`
 										Conclusion string `json:"conclusion"`
+										Status     string `json:"status"`
 										State      string `json:"state"`
 									} `json:"nodes"`
 								} `json:"contexts"`
@@ -66,6 +68,13 @@ var checkFailures = map[string]bool{
 	"ACTION_REQUIRED": true, "ERROR": true,
 }
 
+// checkPending son los estados de un check que todavía no terminó. En un
+// CheckRun eso lo dice status; en un StatusContext, state.
+var checkPending = map[string]bool{
+	"QUEUED": true, "IN_PROGRESS": true, "WAITING": true,
+	"REQUESTED": true, "PENDING": true, "EXPECTED": true,
+}
+
 // parsePRResponse mapea la respuesta de GraphQL a PRState.
 //
 // Mira la clave `errors` aunque haya datos: gh escribe el JSON de error en
@@ -86,6 +95,7 @@ func parsePRResponse(body []byte) (*PRState, error) {
 
 	out := &PRState{
 		Number:         pr.Number,
+		Repo:           res.Data.Repository.NameWithOwner,
 		Title:          pr.Title,
 		State:          pr.State,
 		IsDraft:        pr.IsDraft,
@@ -109,9 +119,20 @@ func parsePRResponse(body []byte) (*PRState, error) {
 			out.ChecksState = rollup.State
 			out.ChecksTotal = rollup.Contexts.TotalCount
 			for _, c := range rollup.Contexts.Nodes {
-				// CheckRun trae conclusion; StatusContext trae state.
-				if checkFailures[c.Conclusion] || checkFailures[c.State] {
+				// CheckRun trae conclusion + status; StatusContext, solo state.
+				outcome, progress := c.Conclusion, c.Status
+				if c.TypeName == "StatusContext" {
+					outcome, progress = c.State, c.State
+				}
+				switch {
+				case checkFailures[outcome]:
 					out.ChecksFailing++
+				case outcome == "" || checkPending[progress]:
+					out.ChecksPending++
+				default:
+					// Incluye SKIPPED, NEUTRAL y CANCELLED: no fallaron, así
+					// que no tienen por qué pintar el PR de rojo.
+					out.ChecksPassed++
 				}
 			}
 		}
