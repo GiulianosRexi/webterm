@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/giuliano/webterm/internal/ptyapi"
@@ -151,4 +152,92 @@ func TestSinExtraEnvNoHayToken(t *testing.T) {
 		t.Fatalf("Write: %v", err)
 	}
 	awaitChunk(t, att.Output(), "TOKEN=[vacio]")
+}
+
+// TestSpawnDespuesDeCloseNoArrancaNada: apagar el manager es definitivo. Si
+// Spawn siguiera arrancando ptys, quedaría un shell del usuario corriendo sin
+// nadie que lo mate.
+func TestSpawnDespuesDeCloseNoArrancaNada(t *testing.T) {
+	m, st := newTestManager(t)
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	rec := &store.Session{
+		ID: store.NewID(), Cwd: t.TempDir(), Shell: "/bin/sh",
+		Cols: 80, Rows: 24, PtyStatus: store.StatusStarting,
+	}
+	if err := st.CreateSession(rec); err != nil {
+		t.Fatal(err)
+	}
+
+	err := m.Spawn(ptyapi.SpawnOpts{
+		ID: rec.ID, Shell: rec.Shell, Cwd: rec.Cwd, Cols: 80, Rows: 24,
+	})
+	if !errors.Is(err, ErrClosed) {
+		t.Fatalf("Spawn después de Close dio %v; quería ErrClosed", err)
+	}
+	ids, err := m.LiveIDs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 0 {
+		t.Fatalf("quedaron ptys vivos después de Close: %v", ids)
+	}
+}
+
+// TestSpawnConcurrenteConCloseNoDejaPtysHuerfanos: el apagado y el spawn
+// compiten de verdad. Cada Spawn o gana y su pty muere con el Close, o pierde y
+// da ErrClosed. Lo que no puede pasar es que arranque un shell que el Close ya
+// no va a matar, ni que startLive sume al WaitGroup que Close ya está
+// esperando.
+func TestSpawnConcurrenteConCloseNoDejaPtysHuerfanos(t *testing.T) {
+	m, st := newTestManager(t)
+
+	// Las filas se crean antes de largar: la carrera que interesa es Spawn
+	// contra Close, no el insert.
+	const n = 8
+	cwd := t.TempDir()
+	ids := make([]string, n)
+	for i := range ids {
+		rec := &store.Session{
+			ID: store.NewID(), Cwd: cwd, Shell: "/bin/sh",
+			Cols: 80, Rows: 24, PtyStatus: store.StatusStarting,
+		}
+		if err := st.CreateSession(rec); err != nil {
+			t.Fatal(err)
+		}
+		ids[i] = rec.ID
+	}
+
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	for i, id := range ids {
+		wg.Add(1)
+		go func(i int, id string) {
+			defer wg.Done()
+			errs[i] = m.Spawn(ptyapi.SpawnOpts{
+				ID: id, Shell: "/bin/sh", Cwd: cwd, Cols: 80, Rows: 24,
+			})
+		}(i, id)
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_ = m.Close()
+	}()
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil && !errors.Is(err, ErrClosed) {
+			t.Fatalf("el Spawn %d dio %v; solo se aceptaba nil o ErrClosed", i, err)
+		}
+	}
+	live, err := m.LiveIDs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(live) != 0 {
+		t.Fatalf("el Close dejó %d ptys vivos: %v", len(live), live)
+	}
 }

@@ -25,6 +25,11 @@ const (
 // DefaultHistoryBytes es el cap de historial por sesión.
 const DefaultHistoryBytes int64 = 1 << 20
 
+// ErrClosed lo devuelve Spawn cuando el manager ya se apagó. Es un error y no
+// un no-op silencioso porque quien pidió la sesión tiene que enterarse de que
+// no va a existir: la fila ya quedó insertada del otro lado.
+var ErrClosed = errors.New("el manager de ptys está cerrado")
+
 // Config parametriza el manager. Es corta a propósito: todo lo que no sea el
 // pty —shell por defecto, variables de entorno, recursos externos— lo resuelve
 // el orquestador y llega resuelto en cada SpawnOpts.
@@ -111,7 +116,13 @@ func NewManager(st *store.Store, cfg Config) *Manager {
 
 // Close apaga el manager: mata las sesiones vivas y espera a que todas
 // terminen de reconciliarse.
+//
+// Toma spawnMu, así que Close y Spawn son mutuamente excluyentes. Sin eso, un
+// Spawn que tomara m.mu después de la foto dejaría un pty que este Close no
+// mata —un shell del usuario corriendo sin dueño— y sumaría al WaitGroup que
+// este Wait ya está esperando, que es uso indebido y puede panickear.
 func (m *Manager) Close() error {
+	m.spawnMu.Lock()
 	m.stopOnce.Do(func() { close(m.stop) })
 
 	m.mu.RLock()
@@ -125,6 +136,11 @@ func (m *Manager) Close() error {
 		l.killed.Store(true)
 		_ = l.pty.Kill()
 	}
+	// El candado se suelta antes del Wait: ya con stop cerrado, cualquier Spawn
+	// que estaba esperando se va a encontrar con ErrClosed, así que no hace
+	// falta bloquearlo todo el tiempo que tarden los reaps.
+	m.spawnMu.Unlock()
+
 	m.wg.Wait()
 	return nil
 }
@@ -137,10 +153,23 @@ func (m *Manager) Close() error {
 //
 // Está serializado entero bajo spawnMu: spawnear es raro y barato de
 // serializar, y sin eso dos Spawn concurrentes del mismo id podrían pasar los
-// dos el chequeo de "no está vivo" y dejar un pty huérfano en el mapa.
+// dos el chequeo de "no está vivo" y dejar un pty huérfano en el mapa. El
+// mismo candado lo toma Close, que es lo que garantiza que un apagado no deje
+// atrás un pty recién arrancado.
+//
+// Shell y Cwd vacíos no caen a lo que diga la fila: caen al entorno del dueño
+// del pty ($SHELL y $HOME del proceso que corre esto, ver terminal.New). Con
+// el daemon como proceso aparte ese es el entorno equivocado, así que el
+// orquestador manda los dos siempre resueltos.
 func (m *Manager) Spawn(o ptyapi.SpawnOpts) error {
 	m.spawnMu.Lock()
 	defer m.spawnMu.Unlock()
+
+	select {
+	case <-m.stop:
+		return ErrClosed
+	default:
+	}
 
 	rec, err := m.st.GetSession(o.ID)
 	if err != nil {
@@ -170,9 +199,10 @@ func (m *Manager) Spawn(o ptyapi.SpawnOpts) error {
 		return fmt.Errorf("spawneando la sesión %s: %w", o.ID, err)
 	}
 
-	// El MarkRunning va bajo el mismo candado que el registro en el mapa: el
-	// sweep del orquestador toma la foto de las vivas con RLock, así que nunca
-	// puede ver una fila running sin sesión asociada y declararla huérfana.
+	// El MarkRunning y el registro en el mapa van bajo el mismo candado, que es
+	// lo único que el candado garantiza: que no se intercalen entre sí. Nadie
+	// que mire la base y el mapa por separado obtiene de acá una foto atómica
+	// de los dos.
 	m.mu.Lock()
 	if err := m.st.MarkRunning(o.ID, o.Cols, o.Rows); err != nil {
 		m.mu.Unlock()
@@ -285,6 +315,13 @@ func (m *Manager) Attach(id string) (ptyapi.Attachment, error) {
 		return nil, ptyapi.ErrNotLive
 	}
 	hist, sub := l.attach(subBuffer)
+	if sub.isClosed() {
+		// Carrera con reap: pasamos el lookup antes de que borrara del mapa,
+		// pero llegamos al hub después de que cerrara a todos. La sesión está
+		// muerta, y devolver un attachment cuyo Output ya nadie va a cerrar
+		// rompería el contrato justo donde el consumidor hace `for range`.
+		return nil, ptyapi.ErrNotLive
+	}
 	return &Attachment{m: m, live: l, history: sanitizeReplay(hist), sub: sub}, nil
 }
 

@@ -144,3 +144,25 @@ func TestHubCloseAll(t *testing.T) {
 		t.Fatalf("quedaron %d suscriptores", h.count())
 	}
 }
+
+// TestHubSubscribeDespuesDeCloseAll: el que llega tarde se lleva un canal ya
+// cerrado. Registrarlo sería dejarlo esperando para siempre, porque closeAll
+// no vuelve a pasar.
+func TestHubSubscribeDespuesDeCloseAll(t *testing.T) {
+	h := newHub()
+	h.closeAll()
+
+	s := h.subscribe(4)
+	if !s.isClosed() {
+		t.Fatal("el suscriptor tardío no quedó marcado como cerrado")
+	}
+	if _, ok := <-s.out(); ok {
+		t.Fatal("el canal del suscriptor tardío quedó abierto")
+	}
+	if s.wasDropped() {
+		t.Fatal("llegar tarde no es una expulsión")
+	}
+	if h.count() != 0 {
+		t.Fatalf("el hub cerrado registró %d suscriptores", h.count())
+	}
+}

@@ -352,3 +352,30 @@ func TestResizeLlegaAlPtyYSePersiste(t *testing.T) {
 		t.Fatalf("la DB guardó %dx%d", got.Cols, got.Rows)
 	}
 }
+
+// TestAttachContraLaMuerteNoDejaElOutputColgado: entre que reap borra la sesión
+// del mapa y que cierra a los clientes hay una ventana en la que un Attach
+// puede pasar el lookup y llegar al hub tarde. Ese attachment quedaría con un
+// Output que nadie va a cerrar nunca, y el consumidor lo lee con `for range`:
+// del otro lado del socket es una goroutine filtrada por sesión.
+//
+// La ventana son unas pocas instrucciones, así que pegarle por timing es una
+// lotería —probado: no cae ni en cientos de miles de intentos—. En vez de eso
+// se fuerza el estado que la ventana produce: sesión todavía en el mapa, hub ya
+// cerrado.
+func TestAttachContraLaMuerteNoDejaElOutputColgado(t *testing.T) {
+	m, st := newTestManager(t)
+	id := spawnTest(t, m, st, nil)
+
+	l := m.lookup(id)
+	if l == nil {
+		t.Fatal("la sesión recién spawneada tendría que estar en el mapa")
+	}
+	l.mu.Lock()
+	l.hub.closeAll()
+	l.mu.Unlock()
+
+	if _, err := m.Attach(id); !errors.Is(err, ptyapi.ErrNotLive) {
+		t.Fatalf("Attach en la ventana de la muerte dio %v; quería ErrNotLive", err)
+	}
+}
