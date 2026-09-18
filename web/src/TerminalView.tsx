@@ -4,12 +4,16 @@ import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 
-export type ConnState = 'connecting' | 'open' | 'closed' | 'exited'
+export type ConnState = 'connecting' | 'open' | 'readonly' | 'closed' | 'exited'
 
 // Protocolo con el backend:
 //   browser -> server : binario = input crudo | texto JSON = control (resize)
-//   server -> browser : binario = output crudo del pty | texto JSON = eventos
-type ServerMsg = { type: 'exit' }
+//   server -> browser : binario = replay y output vivo | texto JSON = eventos
+type ServerMsg =
+  | { type: 'attached'; session: { pty_status: string } }
+  | { type: 'ready' }
+  | { type: 'exit'; code: number; reason: string }
+  | { type: 'error'; error: string }
 
 const theme = {
   background: '#11131a',
@@ -18,7 +22,13 @@ const theme = {
   selectionBackground: '#2c3446',
 }
 
-export function TerminalView({ onState }: { onState: (s: ConnState) => void }) {
+export function TerminalView({
+  sessionId,
+  onState,
+}: {
+  sessionId: string
+  onState: (s: ConnState) => void
+}) {
   const hostRef = useRef<HTMLDivElement>(null)
   // Guardamos el callback en un ref para que el effect corra una sola vez
   // por sesión y no se reconecte en cada render del padre.
@@ -52,12 +62,15 @@ export function TerminalView({ onState }: { onState: (s: ConnState) => void }) {
 
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
     const ws = new WebSocket(
-      `${proto}//${location.host}/ws/terminal?cols=${term.cols}&rows=${term.rows}`,
+      `${proto}//${location.host}/ws/terminal?session_id=${encodeURIComponent(sessionId)}`,
     )
     ws.binaryType = 'arraybuffer'
 
     const encoder = new TextEncoder()
     let exited = false
+    // Una sesión ya terminada se attachea igual: llega el historial y nada
+    // más, así que la mostramos de solo lectura.
+    let live = true
 
     const sendResize = () => {
       if (ws.readyState !== WebSocket.OPEN) return
@@ -66,29 +79,43 @@ export function TerminalView({ onState }: { onState: (s: ConnState) => void }) {
 
     onStateRef.current('connecting')
 
-    ws.onopen = () => {
-      onStateRef.current('open')
-      fit.fit()
-      sendResize()
-      term.focus()
-    }
-
     ws.onmessage = (ev) => {
-      if (typeof ev.data === 'string') {
-        let msg: ServerMsg
-        try {
-          msg = JSON.parse(ev.data)
-        } catch {
-          return
-        }
-        if (msg.type === 'exit') {
-          exited = true
-          onStateRef.current('exited')
-          term.write('\r\n\x1b[90m— el proceso terminó —\x1b[0m\r\n')
-        }
+      if (typeof ev.data !== 'string') {
+        term.write(new Uint8Array(ev.data as ArrayBuffer))
         return
       }
-      term.write(new Uint8Array(ev.data as ArrayBuffer))
+      let msg: ServerMsg
+      try {
+        msg = JSON.parse(ev.data) as ServerMsg
+      } catch {
+        return
+      }
+      switch (msg.type) {
+        case 'attached':
+          live = msg.session.pty_status === 'running'
+          break
+        case 'ready':
+          // El replay ya está escrito; recién acá sabemos si hay pty del otro
+          // lado al que mandarle nuestro tamaño.
+          onStateRef.current(live ? 'open' : 'readonly')
+          if (live) {
+            fit.fit()
+            sendResize()
+            term.focus()
+          }
+          break
+        case 'exit':
+          exited = true
+          live = false
+          onStateRef.current('exited')
+          term.write(
+            `\r\n\x1b[90m— el proceso terminó (${msg.reason}, código ${msg.code}) —\x1b[0m\r\n`,
+          )
+          break
+        case 'error':
+          term.write(`\r\n\x1b[31m— ${msg.error} —\x1b[0m\r\n`)
+          break
+      }
     }
 
     ws.onclose = () => {
@@ -96,9 +123,11 @@ export function TerminalView({ onState }: { onState: (s: ConnState) => void }) {
     }
 
     const dataSub = term.onData((data) => {
-      if (ws.readyState === WebSocket.OPEN) ws.send(encoder.encode(data))
+      if (live && ws.readyState === WebSocket.OPEN) ws.send(encoder.encode(data))
     })
-    const resizeSub = term.onResize(sendResize)
+    const resizeSub = term.onResize(() => {
+      if (live) sendResize()
+    })
 
     // El fit real depende del layout, así que lo reintentamos en cada cambio
     // de tamaño del contenedor (ventana, sidebar, zoom del browser).
@@ -118,7 +147,7 @@ export function TerminalView({ onState }: { onState: (s: ConnState) => void }) {
       ws.close()
       term.dispose()
     }
-  }, [])
+  }, [sessionId])
 
   return <div className="terminal-host" ref={hostRef} />
 }
