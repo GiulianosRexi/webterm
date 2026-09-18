@@ -12,11 +12,14 @@ El diseño completo y el roadmap por milestones están en
 - [x] **M1** — terminal web básica: un pty por conexión WebSocket, input/output,
       resize, true color, mouse.
 - [x] **M2** — persistencia de sesiones (SQLite + session manager) y ABM.
+- [ ] **M8** — recursos externos linkeados a una sesión (PRs de GitHub). ← próximo
 - [ ] **M3** — UI multi-terminal (tabs).
 - [ ] **M4** — folders.
 - [ ] **M5** — CLI local `webterm`.
 - [ ] **M6** — integración con Claude Code (hooks).
 - [ ] **M7** — estado administrativo y dashboard.
+
+Los números son ids estables, no orden de ejecución: M8 va antes que M3.
 
 Desde M2 el pty vive en el backend, no en la conexión: cerrar la pestaña solo
 cierra el socket. El estado, el KV y el último MB de output de cada sesión

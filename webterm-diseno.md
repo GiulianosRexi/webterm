@@ -179,3 +179,111 @@ Notas:
   `kanban_status` da un board tipo kanban; `work_status` da las señales de
   "esto necesita tu atención ahora". Son ortogonales a propósito.
 - Pulido general de UI en base a lo anterior.
+
+### M8 — Recursos externos linkeados a una sesión
+
+**Próximo a implementar** (antes que M3: los números son ids estables, no
+orden de ejecución).
+
+Poder colgarle a una sesión los recursos externos con los que se relaciona, y
+ver su estado sin salir de WebTerm. Se arranca solo con PRs de GitHub, pero el
+modelo es genérico para sumar después tickets de Linear, mensajes de Slack, lo
+que aparezca.
+
+La razón de fondo: `work_status` dice qué está haciendo Claude *ahora*; el PR
+dice dónde está *el trabajo*. Son señales ortogonales, y juntas son lo que hace
+útil al dashboard de M7 — "esta sesión tiene 3 comments sin resolver y los
+checks en rojo" se ve sin entrar a la terminal.
+
+#### Modelo de datos
+
+Tabla propia, no un campo JSON en `sessions`:
+
+```sql
+CREATE TABLE session_resources (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  system     TEXT NOT NULL,   -- gh | linear | slack | ...
+  type       TEXT NOT NULL,   -- pr | issue | ticket | message | ...
+  ref        TEXT NOT NULL,   -- la URL canónica del recurso
+  created_at INTEGER NOT NULL,
+  UNIQUE (session_id, ref)
+);
+CREATE INDEX idx_resources_ref ON session_resources(ref);
+```
+
+El motivo de la tabla es la **búsqueda inversa**: cuando algo diga "el PR 123
+cambió" hay que resolver qué sesiones se prenden. Con un blob JSON eso es un
+scan completo de `sessions` más parsear cada fila; con tabla es un índice. Y no
+suma maquinaria: `session_kv` ya es una tabla y el mecanismo de migraciones ya
+existe desde M2.
+
+**El link y el estado son cosas distintas.** El link (`system`, `type`, `ref`)
+es dato del usuario y es lo único que se persiste acá. El estado traído de
+GitHub —checks, comments, approval— es un caché con TTL que vive aparte y
+siempre viaja con su `fetched_at`, para que la UI pueda decir "hace 2 min" en
+vez de mentir con datos viejos.
+
+#### Estado de un PR
+
+Lo que muestra la card:
+
+| Dato | De dónde sale |
+|---|---|
+| estado del PR | `state`, `isDraft`, `mergeable` |
+| aprobado o no | `reviewDecision` |
+| checks | `statusCheckRollup` |
+| comments sin resolver | `reviewThreads` filtrando `isResolved == false` |
+
+**Se consulta por GraphQL, no por REST.** No es preferencia: *la cuenta de
+comments sin resolver no existe en la API REST*. Los review threads con
+`isResolved` solo están en GraphQL. Por REST habría que paginar comments e
+inferir el estado, y saldría mal. Una sola query de GraphQL trae las cuatro
+filas de la tabla de arriba; el equivalente REST son unas cuatro llamadas que
+igual no dan el dato que importa.
+
+#### Credenciales
+
+Se reusa el `gh` CLI que ya está instalado y autenticado en la máquina, en vez
+de introducir un secreto propio: `gh api graphql`, o leer el token con
+`gh auth token`. Preferible shellear a `gh`, que ya maneja el keyring y el
+refresh.
+
+El rate limit no es una restricción real acá: 5000 req/h en GraphQL, y una
+query por PR cada 30 s son 120/h. Habría que tener ~40 PRs visibles en
+simultáneo para acercarse.
+
+#### Refresco
+
+El polling vive en el **backend**, no en el frontend: el frontend no puede
+llamar a GitHub sin que el token termine en el browser. El cliente declara qué
+recursos está mirando y el backend consulta y cachea con un TTL corto.
+
+Así "solo cuando está visible" queda como lo que es —una decisión del frontend
+sobre *cuándo pedir*— y no como un problema de rate limit. De paso, tres
+clientes mirando el mismo PR cuestan una sola llamada a GitHub.
+
+#### UI
+
+Panel desplegable en la sesión con la lista de recursos linkeados. Linkear es
+manual: se pega la URL del PR.
+
+**No se construye todavía la abstracción de "una card por `system`/`type`".**
+El dato es genérico (`system`, `type`, `ref`, más un `state` opaco que llena el
+backend), pero en el frontend hay una sola card de PR, hardcodeada. Diseñar un
+sistema de plugins contra una muestra de uno es la forma clásica de errarle a
+la abstracción; que la fuerce la segunda integración, con dos casos reales
+sobre la mesa.
+
+Los estados de error son parte del alcance, no un detalle: token sin scope,
+repo privado, PR borrado, GitHub caído. La card los muestra explícitamente, y
+los datos viejos se marcan como viejos. Un check en verde de hace veinte
+minutos mostrado como si fuera de ahora es peor que no mostrar nada.
+
+#### Fuera de alcance, pero sin bloquearlo
+
+**Auto-link desde el `cwd`.** La sesión ya sabe su directorio; de ahí salen el
+remote de git y la branch, y de ahí el PR abierto. Sería lo que convierte la
+feature en algo que no hay que mantener a mano, pero se deja para después: el
+modelo de datos tiene que soportarlo sin cambios, nada más. Con el CLI de M5,
+`webterm link pr` desde adentro de la sesión es la versión barata de lo mismo.
