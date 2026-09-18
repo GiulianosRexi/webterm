@@ -10,6 +10,9 @@ const label: Record<ConnState, string> = {
   readonly: 'solo lectura',
   closed: 'desconectado',
   exited: 'sesión terminada',
+  // Distinto de "conectando…": ahí el socket es el que no está listo; acá el
+  // socket ya contestó pero el daemon todavía no confirmó el pty.
+  starting: 'arrancando…',
 }
 
 // Cada cuánto se refresca la lista. M3 lo reemplaza por un canal de eventos,

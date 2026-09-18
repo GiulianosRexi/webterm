@@ -23,25 +23,38 @@ por sesión.
 
 ## Arquitectura general
 
+Desde M10 el backend son dos procesos Go, no uno: un **orquestador** (HTTP, UI,
+API REST, MCP, recursos, KV) y un **daemon** dueño de los ptys, hablándose por
+un socket Unix. El detalle de por qué está partido así —y qué es cada
+paquete— está en el milestone M10, más abajo; acá el diagrama.
+
 ```
-┌─────────────┐        WebSocket         ┌──────────────────────┐
-│  React UI   │ ◄──────────────────────► │      Go backend       │
-│  (xterm.js) │                          │                       │
-└─────────────┘                          │  ┌─────────────────┐  │
-                                          │  │ session manager  │  │
-                                          │  │ (map[id]*Session)│  │
-                                          │  └────────┬────────┘  │
-                                          │           │           │
-                                          │      creack/pty       │
-                                          │           │           │
-                                          │      shell / claude   │
-                                          └───────────────────────┘
+┌─────────────┐                          ┌─────────────────────────────┐
+│  React UI   │ ◄──────────────────────► │      orquestador (Go)       │
+│ (xterm.js)  │                          │  internal/control, server,  │
+│             │                          │    mcp, resources, store    │
+└─────────────┘                          └──────────────┴──────────────┘
+                                                        │
+                                                   socket Unix
+                                        (internal/ptyapi, daemonclient)
+                                                        ▼
+                                         ┌─────────────────────────────┐
+                                         │         daemon (Go)         │
+                                         │                             │
+                                         │      internal/session       │
+                                         │    (map[id]*liveSession)    │
+                                         │                             │
+                                         │         creack/pty          │
+                                         │                             │
+                                         │       shell / claude        │
+                                         └─────────────────────────────┘
 ```
 
-Principio central: el **pty vive en el proceso del backend Go**, no depende del
-WebSocket. Cerrar la pestaña del browser solo cierra el socket — el proceso
-sigue corriendo y emitiendo output al backend igual. No se usa tmux: la
-persistencia frente a desconexión de clientes la resuelve el propio backend.
+Principio central: el **pty vive en un proceso Go separado del que sirve la
+UI**, así que ni cerrar la pestaña del browser ni reiniciar el orquestador lo
+tocan — el proceso sigue corriendo y emitiendo output al daemon igual. No se
+usa tmux: la persistencia frente a desconexión de clientes, y desde M10 frente
+al reinicio del propio backend HTTP, la resuelve este esquema de dos procesos.
 
 ### Redibujado al reconectar (sin tmux, sin xterm-headless)
 
@@ -316,6 +329,8 @@ El diseño detallado está en
 `docs/superpowers/specs/2026-09-18-m9-servidor-mcp-design.md`.
 
 ### M10 — Daemon de sesiones
+
+**Hecho.**
 
 El backend se parte en dos procesos: un **daemon** dueño de los ptys y del
 historial, y el **orquestador** con todo lo demás (HTTP, UI, API, MCP,

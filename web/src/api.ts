@@ -1,4 +1,8 @@
-export type PtyStatus = 'running' | 'exited'
+// starting es la ventana entre que el orquestador inserta la fila y el daemon
+// confirma el spawn (ver internal/store/session.go). Normal que dure
+// milisegundos, pero el frontend tiene que saber que no es lo mismo que
+// exited: no hay proceso todavía, pero tampoco terminó nada.
+export type PtyStatus = 'running' | 'exited' | 'starting'
 
 export interface Session {
   id: string
@@ -52,7 +56,18 @@ export const api = {
       body: JSON.stringify({ cols, rows }),
     }),
   remove: (id: string) => req<void>(`/api/sessions/${id}`, { method: 'DELETE' }),
-  health: () => req<{ status: string; auth: boolean; sessions: number }>('/api/health'),
+  // sessions es opcional a propósito: si el daemon no contesta, el backend lo
+  // omite en vez de mandar un 0 que sería mentira, y avisa con
+  // daemon: 'unreachable'. El tipo obliga a distinguir "no hay sesiones" de
+  // "no se sabe cuántas hay".
+  health: () =>
+    req<{
+      status: string
+      auth: boolean
+      daemon?: 'ok' | 'unreachable'
+      daemon_error?: string
+      sessions?: number
+    }>('/api/health'),
   resources: {
     list: (sessionId: string) =>
       req<LinkedResource[]>(`/api/sessions/${sessionId}/resources`),

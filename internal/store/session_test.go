@@ -2,6 +2,8 @@ package store
 
 import (
 	"errors"
+	"reflect"
+	"sort"
 	"testing"
 )
 
@@ -143,46 +145,86 @@ func TestDeleteSession(t *testing.T) {
 	}
 }
 
-// TestReconcileBoot cubre el caso central de M2: el pty es hijo del backend,
-// así que toda sesión que la DB diga "running" al arrancar es mentira.
-func TestReconcileBoot(t *testing.T) {
+func TestActiveSessionsIncluyeStartingYRunning(t *testing.T) {
 	st := newTestStore(t)
-	_ = st.CreateSession(sampleSession("viva"))
-	_ = st.CreateSession(sampleSession("muerta"))
-	code := 0
-	_ = st.MarkExited("muerta", ReasonNormal, &code)
 
-	n, err := st.ReconcileBoot()
+	corriendo := &Session{ID: "a", Cwd: "/tmp", Shell: "/bin/sh", Cols: 80, Rows: 24, PtyStatus: StatusRunning}
+	arrancando := &Session{ID: "b", Cwd: "/tmp", Shell: "/bin/sh", Cols: 80, Rows: 24, PtyStatus: StatusStarting}
+	muerta := &Session{ID: "c", Cwd: "/tmp", Shell: "/bin/sh", Cols: 80, Rows: 24, PtyStatus: StatusExited}
+	for _, s := range []*Session{corriendo, arrancando, muerta} {
+		if err := st.CreateSession(s); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	active, err := st.ActiveSessions()
 	if err != nil {
-		t.Fatalf("ReconcileBoot: %v", err)
+		t.Fatal(err)
 	}
-	if n != 1 {
-		t.Fatalf("se reconciliaron %d sesiones, se esperaba 1", n)
+	ids := []string{}
+	for _, a := range active {
+		ids = append(ids, a.ID)
+		// El estado y la marca de actividad son la entrada del CAS del sweep:
+		// si vinieran en cero, MarkExitedIfUnchanged no matchearía nunca y el
+		// sweep dejaría de barrer sin que nada fallara ruidosamente.
+		if a.PtyStatus == "" || a.LastActiveAt == 0 {
+			t.Fatalf("la fila %s vino sin estado ni last_active_at: %+v", a.ID, a)
+		}
 	}
-
-	got, _ := st.GetSession("viva")
-	if got.PtyStatus != StatusExited || got.ExitReason != string(ReasonBackendRestart) {
-		t.Fatalf("no se reconcilió: %+v", got)
-	}
-	// La que ya estaba muerta no se toca: conserva su razón real.
-	otra, _ := st.GetSession("muerta")
-	if otra.ExitReason != string(ReasonNormal) {
-		t.Fatalf("se pisó una sesión ya muerta: %+v", otra)
+	sort.Strings(ids)
+	if !reflect.DeepEqual(ids, []string{"a", "b"}) {
+		t.Fatalf("ActiveSessions = %v; quería [a b]", ids)
 	}
 }
 
-func TestRunningIDs(t *testing.T) {
+// Una fila que quedó en starting porque el orquestador crasheó entre el
+// insert y el spawn tiene que poder marcarse muerta como cualquier otra.
+func TestMarkExitedSobreStarting(t *testing.T) {
 	st := newTestStore(t)
-	_ = st.CreateSession(sampleSession("a"))
-	_ = st.CreateSession(sampleSession("b"))
-	_ = st.MarkExited("b", ReasonKilled, nil)
-
-	ids, err := st.RunningIDs()
-	if err != nil {
-		t.Fatalf("RunningIDs: %v", err)
+	sess := &Session{ID: "x", Cwd: "/tmp", Shell: "/bin/sh", Cols: 80, Rows: 24, PtyStatus: StatusStarting}
+	if err := st.CreateSession(sess); err != nil {
+		t.Fatal(err)
 	}
-	if len(ids) != 1 || ids[0] != "a" {
-		t.Fatalf("RunningIDs = %v", ids)
+
+	if err := st.MarkExited("x", ReasonOrphaned, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := st.GetSession("x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PtyStatus != StatusExited || got.ExitReason != string(ReasonOrphaned) {
+		t.Fatalf("quedó %s/%s; quería exited/orphaned", got.PtyStatus, got.ExitReason)
+	}
+}
+
+func TestMarkStarting(t *testing.T) {
+	st := newTestStore(t)
+	sess := &Session{ID: "x", Cwd: "/tmp", Shell: "/bin/sh", Cols: 80, Rows: 24, PtyStatus: StatusExited}
+	sess.ExitReason = string(ReasonNormal)
+	if err := st.CreateSession(sess); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := st.MarkStarting("x"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := st.GetSession("x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PtyStatus != StatusStarting {
+		t.Fatalf("pty_status = %s; quería starting", got.PtyStatus)
+	}
+	// Los rastros de la salida anterior se borran: si no, la UI muestra un
+	// exit code al lado de una sesión que está arrancando.
+	if got.ExitReason != "" || got.ExitCode != nil || got.ExitedAt != nil {
+		t.Fatalf("quedaron rastros de la salida anterior: %+v", got)
+	}
+	if err := st.MarkStarting("no-existe"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("MarkStarting sobre una sesión inexistente dio %v; quería ErrNotFound", err)
 	}
 }
 
@@ -215,4 +257,106 @@ func TestUpdateSize(t *testing.T) {
 	if got.Cols != 140 || got.Rows != 50 {
 		t.Fatalf("tamaño = %dx%d", got.Cols, got.Rows)
 	}
+}
+
+// El CAS de MarkExitedIfUnchanged es lo que le permite al sweep escribir sin
+// riesgo: una fila que ya murió conserva su motivo real.
+func TestMarkExitedIfUnchanged(t *testing.T) {
+	st := newTestStore(t)
+	if err := st.CreateSession(sampleSession("s1")); err != nil {
+		t.Fatal(err)
+	}
+	prev := soloActiva(t, st, "s1")
+
+	// La fila sigue como la leímos: le toca a este llamador marcarla.
+	marcada, err := st.MarkExitedIfUnchanged(prev, ReasonOrphaned, nil)
+	if err != nil {
+		t.Fatalf("MarkExitedIfUnchanged: %v", err)
+	}
+	if !marcada {
+		t.Fatal("la fila estaba como la leímos y no la marcó")
+	}
+	got, _ := st.GetSession("s1")
+	if got.PtyStatus != StatusExited || got.ExitReason != string(ReasonOrphaned) {
+		t.Fatalf("quedó %s/%s; quería exited/orphaned", got.PtyStatus, got.ExitReason)
+	}
+
+	// Ya muerta: no se toca, y el motivo real sobrevive.
+	marcada, err = st.MarkExitedIfUnchanged(prev, ReasonDaemonRestart, nil)
+	if err != nil {
+		t.Fatalf("MarkExitedIfUnchanged sobre una fila muerta: %v", err)
+	}
+	if marcada {
+		t.Fatal("pisó una fila que ya estaba exited")
+	}
+	got, _ = st.GetSession("s1")
+	if got.ExitReason != string(ReasonOrphaned) {
+		t.Fatalf("exit_reason = %q; se perdió el motivo original", got.ExitReason)
+	}
+
+	// Una fila que no existe no es un error: es el mismo "no me tocó a mí".
+	marcada, err = st.MarkExitedIfUnchanged(
+		ActiveSession{ID: "no-existe", PtyStatus: StatusRunning, LastActiveAt: 1}, ReasonOrphaned, nil)
+	if err != nil || marcada {
+		t.Fatalf("fila inexistente dio marcada=%v err=%v; quería false y nil", marcada, err)
+	}
+}
+
+// Y la contracara: sobre una fila en starting sí escribe, porque starting es un
+// estado activo. Es lo que levanta las filas que quedaron trabadas entre el
+// insert y el spawn.
+func TestMarkExitedIfUnchangedSobreStarting(t *testing.T) {
+	st := newTestStore(t)
+	sess := &Session{ID: "x", Cwd: "/tmp", Shell: "/bin/sh", Cols: 80, Rows: 24, PtyStatus: StatusStarting}
+	if err := st.CreateSession(sess); err != nil {
+		t.Fatal(err)
+	}
+	marcada, err := st.MarkExitedIfUnchanged(soloActiva(t, st, "x"), ReasonDaemonRestart, nil)
+	if err != nil || !marcada {
+		t.Fatalf("starting tendría que marcarse: marcada=%v err=%v", marcada, err)
+	}
+}
+
+// Una fila que pasó de starting a running entre la lectura y el UPDATE es una
+// sesión que terminó de nacer: es el I1 del review final, visto desde el store.
+func TestMarkExitedIfUnchangedNoTocaUnaFilaQueCambio(t *testing.T) {
+	st := newTestStore(t)
+	sess := &Session{ID: "x", Cwd: "/tmp", Shell: "/bin/sh", Cols: 80, Rows: 24, PtyStatus: StatusStarting}
+	if err := st.CreateSession(sess); err != nil {
+		t.Fatal(err)
+	}
+	prev := soloActiva(t, st, "x")
+
+	// El spawn termina: la fila pasa a running con un pty vivo detrás.
+	if err := st.MarkRunning("x", 80, 24); err != nil {
+		t.Fatal(err)
+	}
+
+	marcada, err := st.MarkExitedIfUnchanged(prev, ReasonDaemonRestart, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if marcada {
+		t.Fatal("marcó muerta una fila que cambió después de leerla")
+	}
+	got, _ := st.GetSession("x")
+	if got.PtyStatus != StatusRunning {
+		t.Fatalf("quedó %s; quería running", got.PtyStatus)
+	}
+}
+
+// soloActiva devuelve la fila activa con ese id tal como la ve el sweep.
+func soloActiva(t *testing.T, st *Store, id string) ActiveSession {
+	t.Helper()
+	active, err := st.ActiveSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range active {
+		if a.ID == id {
+			return a
+		}
+	}
+	t.Fatalf("la fila %s no está entre las activas: %+v", id, active)
+	return ActiveSession{}
 }

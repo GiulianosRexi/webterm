@@ -2,22 +2,66 @@ package session
 
 import (
 	"bytes"
+	"errors"
+	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/giuliano/webterm/internal/ptyapi"
 	"github.com/giuliano/webterm/internal/store"
 )
 
+// newTestManager arma un manager sobre una base temporal. A diferencia de M2,
+// el manager ya no inserta filas: la fila la crea quien lo llama, igual que
+// hace el orquestador en producción.
 func newTestManager(t *testing.T) (*Manager, *store.Store) {
 	t.Helper()
-	st := newTestStore(t)
-	m := NewManager(st, Config{Shell: "/bin/bash", HistoryBytes: 1 << 20, SweepEvery: time.Hour})
-	if err := m.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = m.Close() })
+	m := NewManager(st, Config{HistoryBytes: 64 << 10})
+	t.Cleanup(func() {
+		_ = m.Close()
+		_ = st.Close()
+	})
 	return m, st
+}
+
+// spawnTest inserta la fila y arranca el pty, que es la secuencia que hace el
+// orquestador. Devuelve el id.
+func spawnTest(t *testing.T, m *Manager, st *store.Store, env []string) string {
+	t.Helper()
+	rec := &store.Session{
+		ID: store.NewID(), Cwd: t.TempDir(), Shell: "/bin/sh",
+		Cols: 80, Rows: 24, PtyStatus: store.StatusStarting,
+	}
+	if err := st.CreateSession(rec); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Spawn(ptyapi.SpawnOpts{
+		ID: rec.ID, Shell: rec.Shell, Cwd: rec.Cwd, Cols: 80, Rows: 24, Env: env,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return rec.ID
+}
+
+// waitFor espera hasta que cond sea verdadera. Los ptys son asincrónicos y un
+// sleep fijo es la receta de un test que falla una vez cada veinte.
+func waitFor(t *testing.T, plazo time.Duration, motivo string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(plazo)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timeout esperando: %s", motivo)
 }
 
 // awaitChunk acumula output del canal hasta encontrar want.
@@ -41,99 +85,213 @@ func awaitChunk(t *testing.T, ch <-chan []byte, want string) string {
 	}
 }
 
-func TestCreatePersisteYCorre(t *testing.T) {
+func tail(p []byte, n int) string {
+	if len(p) > n {
+		p = p[len(p)-n:]
+	}
+	return string(p)
+}
+
+func TestSpawnNecesitaLaFila(t *testing.T) {
+	m, _ := newTestManager(t)
+	// Sin fila no hay spawn: session_output tiene FK contra sessions, así que
+	// un pty sin fila dejaría el historial sin dónde escribirse.
+	err := m.Spawn(ptyapi.SpawnOpts{ID: "no-existe", Shell: "/bin/sh", Cwd: t.TempDir(), Cols: 80, Rows: 24})
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("Spawn sin fila dio %v; quería ErrNotFound", err)
+	}
+}
+
+func TestSpawnSobreSesionVivaEsConflicto(t *testing.T) {
 	m, st := newTestManager(t)
+	id := spawnTest(t, m, st, nil)
 
-	rec, err := m.Create(CreateOpts{Title: "una sesión", Cwd: "/tmp", Cols: 80, Rows: 24})
+	err := m.Spawn(ptyapi.SpawnOpts{ID: id, Shell: "/bin/sh", Cwd: t.TempDir(), Cols: 80, Rows: 24})
+	if !errors.Is(err, ptyapi.ErrAlreadyLive) {
+		t.Fatalf("Spawn duplicado dio %v; quería ErrAlreadyLive", err)
+	}
+}
+
+func TestSpawnMarcaRunning(t *testing.T) {
+	m, st := newTestManager(t)
+	id := spawnTest(t, m, st, nil)
+
+	rec, err := st.GetSession(id)
 	if err != nil {
-		t.Fatalf("Create: %v", err)
+		t.Fatal(err)
 	}
-	if rec.ID == "" {
-		t.Fatal("Create no asignó id")
+	if rec.PtyStatus != store.StatusRunning {
+		t.Fatalf("pty_status = %s; quería running", rec.PtyStatus)
+	}
+}
+
+func TestSpawnFallidoMarcaSpawnFailed(t *testing.T) {
+	m, st := newTestManager(t)
+	rec := &store.Session{
+		ID: store.NewID(), Cwd: t.TempDir(), Shell: "/no/existe/este/shell",
+		Cols: 80, Rows: 24, PtyStatus: store.StatusStarting,
+	}
+	if err := st.CreateSession(rec); err != nil {
+		t.Fatal(err)
 	}
 
+	if err := m.Spawn(ptyapi.SpawnOpts{
+		ID: rec.ID, Shell: rec.Shell, Cwd: rec.Cwd, Cols: 80, Rows: 24,
+	}); err == nil {
+		t.Fatal("un shell inexistente tendría que fallar")
+	}
+
+	// El error tiene que quedar en la fila, no perderse en un log: es lo que
+	// hace que aparezca en la UI.
 	got, err := st.GetSession(rec.ID)
 	if err != nil {
-		t.Fatalf("GetSession: %v", err)
+		t.Fatal(err)
 	}
-	if got.PtyStatus != store.StatusRunning {
-		t.Fatalf("pty_status = %q", got.PtyStatus)
+	if got.PtyStatus != store.StatusExited || got.ExitReason != string(store.ReasonSpawnFailed) {
+		t.Fatalf("quedó %s/%s; quería exited/spawn_failed", got.PtyStatus, got.ExitReason)
 	}
-	if got.Title != "una sesión" || got.Cwd != "/tmp" {
-		t.Fatalf("metadata mal guardada: %+v", got)
+}
+
+func TestSpawnConBannerLoDejaEnElHistorial(t *testing.T) {
+	m, st := newTestManager(t)
+	rec := &store.Session{
+		ID: store.NewID(), Cwd: t.TempDir(), Shell: "/bin/sh",
+		Cols: 80, Rows: 24, PtyStatus: store.StatusStarting,
+	}
+	if err := st.CreateSession(rec); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Spawn(ptyapi.SpawnOpts{
+		ID: rec.ID, Shell: rec.Shell, Cwd: rec.Cwd, Cols: 80, Rows: 24,
+		Banner: "MARCADOR-DE-REANUDACION",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// La aserción va contra session_output y no contra el ring.
+	//
+	// El ring vive en memoria del daemon: que el banner esté ahí solo prueba
+	// que el replay de un attach inmediato lo muestra. Lo que hace que el
+	// marcador sobreviva a un reinicio del orquestador —que es para lo que el
+	// banner existe— es la copia en la base, y esa es la mitad que hay que
+	// probar. Antes este test verificaba el ring, o sea la mitad que no importa.
+	waitFor(t, 15*time.Second, "el banner en session_output", func() bool {
+		hist, err := st.ReadOutput(rec.ID)
+		return err == nil && bytes.Contains(hist, []byte("MARCADOR-DE-REANUDACION"))
+	})
+}
+
+func TestAttachASesionNoVivaDaErrNotLive(t *testing.T) {
+	m, st := newTestManager(t)
+	id := spawnTest(t, m, st, nil)
+	if err := m.Kill(id); err != nil {
+		t.Fatal(err)
+	}
+
+	// El daemon no sabe leer historiales de sesiones muertas: ese camino es
+	// del orquestador, que lo resuelve contra la base sin consultarlo.
+	if _, err := m.Attach(id); !errors.Is(err, ptyapi.ErrNotLive) {
+		t.Fatalf("Attach a sesión muerta dio %v; quería ErrNotLive", err)
+	}
+}
+
+func TestLiveIDs(t *testing.T) {
+	m, st := newTestManager(t)
+	a := spawnTest(t, m, st, nil)
+	b := spawnTest(t, m, st, nil)
+
+	ids, err := m.LiveIDs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(ids)
+	quiero := []string{a, b}
+	sort.Strings(quiero)
+	if !reflect.DeepEqual(ids, quiero) {
+		t.Fatalf("LiveIDs = %v; quería %v", ids, quiero)
+	}
+
+	if err := m.Kill(a); err != nil {
+		t.Fatal(err)
+	}
+	ids, _ = m.LiveIDs()
+	if !reflect.DeepEqual(ids, []string{b}) {
+		t.Fatalf("después del kill LiveIDs = %v; quería [%s]", ids, b)
 	}
 }
 
 // TestSobreviveAlDetach es la premisa entera de M2: cerrar el cliente no mata
 // el proceso, y al volver se ve lo que pasó mientras tanto.
 func TestSobreviveAlDetach(t *testing.T) {
-	m, _ := newTestManager(t)
-	rec, err := m.Create(CreateOpts{Cwd: "/tmp", Cols: 80, Rows: 24})
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
+	m, st := newTestManager(t)
+	id := spawnTest(t, m, st, nil)
 
-	att, err := m.Attach(rec.ID)
+	att, err := m.Attach(id)
 	if err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
-	if !att.Live {
-		t.Fatal("la sesión recién creada tendría que estar viva")
-	}
-	if err := m.Write(rec.ID, []byte("echo marca-uno\n")); err != nil {
+	if err := att.Write([]byte("echo marca-uno\n")); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
-	awaitChunk(t, att.Output, "marca-uno")
+	awaitChunk(t, att.Output(), "marca-uno")
 	att.Detach()
 
-	// Con el cliente desconectado, el proceso sigue trabajando.
-	if err := m.Write(rec.ID, []byte("echo marca-dos\n")); err != nil {
+	// Con el cliente desconectado, el proceso sigue trabajando: mandamos el
+	// comando y nos vamos enseguida, así el output se produce sin nadie
+	// escuchando, que es lo que el test tiene que probar.
+	emisor, err := m.Attach(id)
+	if err != nil {
+		t.Fatalf("Attach para escribir: %v", err)
+	}
+	if err := emisor.Write([]byte("echo marca-dos\n")); err != nil {
 		t.Fatalf("Write con el cliente desconectado: %v", err)
 	}
-	time.Sleep(500 * time.Millisecond)
+	emisor.Detach()
 
-	att2, err := m.Attach(rec.ID)
-	if err != nil {
-		t.Fatalf("re-Attach: %v", err)
-	}
-	defer att2.Detach()
-	if !att2.Live {
-		t.Fatal("la sesión murió al desattachear")
-	}
-	if !bytes.Contains(att2.History, []byte("marca-dos")) {
-		t.Fatalf("el replay no trae lo que pasó estando desconectado: %q", tail(att2.History, 200))
-	}
-	if !bytes.Contains(att2.History, []byte("marca-uno")) {
-		t.Fatalf("el replay perdió lo de antes del detach: %q", tail(att2.History, 200))
+	// Volver a attachear es el camino real del cliente que vuelve: lo que pasó
+	// mientras tanto tiene que estar en el replay.
+	var replay []byte
+	waitFor(t, 15*time.Second, "que el replay traiga lo que pasó estando desconectado", func() bool {
+		vuelta, err := m.Attach(id)
+		if err != nil {
+			t.Fatalf("re-Attach: %v", err)
+		}
+		replay = vuelta.History()
+		vuelta.Detach()
+		return bytes.Contains(replay, []byte("marca-dos"))
+	})
+	if !bytes.Contains(replay, []byte("marca-uno")) {
+		t.Fatalf("el replay perdió lo de antes del detach: %q", tail(replay, 200))
 	}
 }
 
 // TestExitDelShellSeReconcilia: el estado en la DB sigue al proceso real.
 func TestExitDelShellSeReconcilia(t *testing.T) {
 	m, st := newTestManager(t)
-	rec, _ := m.Create(CreateOpts{Cwd: "/tmp", Cols: 80, Rows: 24})
+	id := spawnTest(t, m, st, nil)
 
-	att, err := m.Attach(rec.ID)
+	att, err := m.Attach(id)
 	if err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
-	if err := m.Write(rec.ID, []byte("exit 5\n")); err != nil {
+	defer att.Detach()
+	if err := att.Write([]byte("exit 5\n")); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 
-	// El canal se cierra cuando la sesión muere.
+	// El canal se cierra cuando la sesión muere, y para entonces la fila ya
+	// está marcada.
 	deadline := time.After(15 * time.Second)
 	for open := true; open; {
 		select {
-		case _, ok := <-att.Output:
+		case _, ok := <-att.Output():
 			open = ok
 		case <-deadline:
 			t.Fatal("timeout esperando el cierre del canal")
 		}
 	}
 
-	waitDead(t, m, rec.ID)
-	got, err := st.GetSession(rec.ID)
+	got, err := st.GetSession(id)
 	if err != nil {
 		t.Fatalf("GetSession: %v", err)
 	}
@@ -145,120 +303,82 @@ func TestExitDelShellSeReconcilia(t *testing.T) {
 	}
 }
 
-// TestAttachASesionMuerta: se puede ver el historial de una sesión terminada
-// sin una vista aparte, en modo lectura.
-func TestAttachASesionMuerta(t *testing.T) {
-	m, _ := newTestManager(t)
-	rec, _ := m.Create(CreateOpts{Cwd: "/tmp", Cols: 80, Rows: 24})
-
-	att, _ := m.Attach(rec.ID)
-	_ = m.Write(rec.ID, []byte("echo antes-de-morir\n"))
-	awaitChunk(t, att.Output, "antes-de-morir")
-	_ = m.Write(rec.ID, []byte("exit\n"))
-	att.Detach()
-
-	waitDead(t, m, rec.ID)
-
-	muerta, err := m.Attach(rec.ID)
-	if err != nil {
-		t.Fatalf("Attach a sesión muerta: %v", err)
-	}
-	defer muerta.Detach()
-	if muerta.Live {
-		t.Fatal("Live tendría que ser false")
-	}
-	if muerta.Output != nil {
-		t.Fatal("una sesión muerta no tiene stream vivo")
-	}
-	if !bytes.Contains(muerta.History, []byte("antes-de-morir")) {
-		t.Fatalf("el historial no sobrevivió: %q", tail(muerta.History, 200))
-	}
-	// El input a una sesión muerta no revive nada.
-	if err := m.Write(rec.ID, []byte("echo tarde\n")); err == nil {
-		t.Fatal("escribir a una sesión muerta tendría que fallar")
-	}
-}
-
-func TestAttachInexistente(t *testing.T) {
-	m, _ := newTestManager(t)
-	if _, err := m.Attach("no-existe"); err == nil {
-		t.Fatal("se esperaba un error")
-	}
-}
-
 // TestFanOutADosClientes: dos pestañas abiertas sobre la misma sesión ven lo
 // mismo.
 func TestFanOutADosClientes(t *testing.T) {
-	m, _ := newTestManager(t)
-	rec, _ := m.Create(CreateOpts{Cwd: "/tmp", Cols: 80, Rows: 24})
+	m, st := newTestManager(t)
+	id := spawnTest(t, m, st, nil)
 
-	a, _ := m.Attach(rec.ID)
+	a, err := m.Attach(id)
+	if err != nil {
+		t.Fatalf("Attach a: %v", err)
+	}
 	defer a.Detach()
-	b, _ := m.Attach(rec.ID)
+	b, err := m.Attach(id)
+	if err != nil {
+		t.Fatalf("Attach b: %v", err)
+	}
 	defer b.Detach()
 
-	if err := m.Write(rec.ID, []byte("echo dos-clientes\n")); err != nil {
+	if err := a.Write([]byte("echo dos-clientes\n")); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
-	awaitChunk(t, a.Output, "dos-clientes")
-	awaitChunk(t, b.Output, "dos-clientes")
+	awaitChunk(t, a.Output(), "dos-clientes")
+	awaitChunk(t, b.Output(), "dos-clientes")
 }
 
 // TestResizeLlegaAlPtyYSePersiste: el shell ve el tamaño nuevo y la DB lo
 // recuerda para cuando se reanude la sesión.
 func TestResizeLlegaAlPtyYSePersiste(t *testing.T) {
 	m, st := newTestManager(t)
-	rec, _ := m.Create(CreateOpts{Cwd: "/tmp", Cols: 80, Rows: 24})
+	id := spawnTest(t, m, st, nil)
 
-	att, _ := m.Attach(rec.ID)
+	att, err := m.Attach(id)
+	if err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
 	defer att.Detach()
 
-	if err := m.Resize(rec.ID, 45, 123); err != nil {
+	if err := att.Resize(45, 123); err != nil {
 		t.Fatalf("Resize: %v", err)
 	}
-	_ = m.Write(rec.ID, []byte("stty size\n"))
-	awaitChunk(t, att.Output, "45 123")
+	if err := att.Write([]byte("stty size\n")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	awaitChunk(t, att.Output(), "45 123")
 
-	got, _ := st.GetSession(rec.ID)
+	got, err := st.GetSession(id)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
 	if got.Cols != 123 || got.Rows != 45 {
 		t.Fatalf("la DB guardó %dx%d", got.Cols, got.Rows)
 	}
 }
 
-func TestUpdateMeta(t *testing.T) {
-	m, _ := newTestManager(t)
-	rec, _ := m.Create(CreateOpts{Title: "vieja", Cwd: "/tmp", Cols: 80, Rows: 24})
+// TestAttachContraLaMuerteNoDejaElOutputColgado: entre que reap borra la sesión
+// del mapa y que cierra a los clientes hay una ventana en la que un Attach
+// puede pasar el lookup y llegar al hub tarde. Ese attachment quedaría con un
+// Output que nadie va a cerrar nunca, y el consumidor lo lee con `for range`:
+// del otro lado del socket es una goroutine filtrada por sesión.
+//
+// La ventana son unas pocas instrucciones, así que pegarle por timing es una
+// lotería —probado: no cae ni en cientos de miles de intentos—. En vez de eso
+// se fuerza el estado que la ventana produce: sesión todavía en el mapa, hub ya
+// cerrado.
+func TestAttachContraLaMuerteNoDejaElOutputColgado(t *testing.T) {
+	m, st := newTestManager(t)
+	id := spawnTest(t, m, st, nil)
 
-	nuevo := "nueva"
-	got, err := m.UpdateMeta(rec.ID, store.MetaPatch{Title: &nuevo})
-	if err != nil {
-		t.Fatalf("UpdateMeta: %v", err)
+	l := m.lookup(id)
+	if l == nil {
+		t.Fatal("la sesión recién spawneada tendría que estar en el mapa")
 	}
-	if got.Title != "nueva" {
-		t.Fatalf("title = %q", got.Title)
-	}
-}
+	l.mu.Lock()
+	l.hub.closeAll()
+	l.mu.Unlock()
 
-// waitDead espera a que la sesión quede marcada como muerta en la DB.
-func waitDead(t *testing.T, m *Manager, id string) {
-	t.Helper()
-	deadline := time.Now().Add(15 * time.Second)
-	for time.Now().Before(deadline) {
-		got, err := m.Get(id)
-		if err != nil {
-			t.Fatalf("Get: %v", err)
-		}
-		if got.PtyStatus == store.StatusExited {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
+	if _, err := m.Attach(id); !errors.Is(err, ptyapi.ErrNotLive) {
+		t.Fatalf("Attach en la ventana de la muerte dio %v; quería ErrNotLive", err)
 	}
-	t.Fatalf("la sesión %s nunca quedó marcada como muerta", id)
-}
-
-func tail(p []byte, n int) string {
-	if len(p) > n {
-		p = p[len(p)-n:]
-	}
-	return string(p)
 }

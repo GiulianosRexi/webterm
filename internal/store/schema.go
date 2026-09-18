@@ -2,6 +2,25 @@ package store
 
 // migrations se aplican en orden; el índice + 1 es el número de versión.
 // Nunca se edita una migración ya publicada: se agrega otra al final.
+//
+// Desde M10 hay una restricción más, que no es de estilo sino del diseño de dos
+// procesos: **las migraciones tienen que ser aditivas**. El flujo canónico de
+// desarrollo es tocar control + store, recompilar y reiniciar SOLO el
+// orquestador, dejando vivo al daemon con las sesiones —es literalmente lo que
+// M10 vino a comprar—. Ese reinicio corre las migraciones sobre una base que un
+// daemon VIEJO tiene abierta y sigue escribiendo: el daemon no se enteró de
+// nada y sus queries son las de antes.
+//
+// Agregar una tabla, un índice o una columna nueva es invisible para él y anda.
+// Renombrar o borrar una columna, cambiar un tipo o poner un CHECK más estricto
+// rompe al daemon vivo en pleno uso, y el síntoma sale por el lado más
+// confuso posible: el historial de las sesiones dejando de guardarse, o los
+// reaps fallando, mientras el orquestador nuevo se ve perfecto.
+//
+// Si una migración destructiva es inevitable, el cambio incluye subir
+// daemon.ProtocolVersion y avisar que hace falta `webterm daemon restart`
+// —que mata las sesiones, y por eso es explícito—. Lo mismo está resumido en el
+// README, en "Arquitectura: daemon y orquestador".
 var migrations = []string{schemaV1, schemaV2}
 
 // schemaV1 define el modelo completo de sesión del diseño, incluidos los

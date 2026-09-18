@@ -91,15 +91,36 @@ export function SessionList({
             )}
             <span className="when">{relative(s.last_active_at)}</span>
             <span className="actions" onClick={(e) => e.stopPropagation()}>
-              {s.pty_status === 'running' ? (
+              {s.pty_status === 'running' && (
                 <button onClick={() => onKill(s.id)} disabled={busy} title="Matar el proceso">
                   ■
                 </button>
-              ) : (
+              )}
+              {s.pty_status === 'exited' && (
                 <button onClick={() => onRestart(s.id)} disabled={busy} title="Reanudar">
                   ▶
                 </button>
               )}
+              {/* starting es la ventana en la que el orquestador ya pidió el
+                  spawn y todavía no supo si el daemon lo confirmó. Ni Matar
+                  ni Reanudar tienen sentido ahí: Restart verifica contra el
+                  daemon que la sesión no esté viva y spawnea de nuevo, y
+                  dispararlo acá podría chocar con el spawn que ya está en
+                  vuelo. Es transitorio (el poll de App refresca solo) así
+                  que alcanza con mostrar que está arrancando. */}
+              {s.pty_status === 'starting' && (
+                <span className="starting-hint" title="La sesión está arrancando">
+                  …
+                </span>
+              )}
+              {/* Borrar sí queda disponible en starting, a diferencia de las
+                  otras dos acciones: Delete no le exige nada al daemon sobre
+                  el pty (Kill tolera que todavía no exista) y solo borra la
+                  fila. Si el spawn en vuelo termina después de este borrado,
+                  sus updates a la fila ya borrada son un no-op silencioso
+                  (ErrNotFound, contemplado en el backend). Es la única forma
+                  de cancelar una sesión que quedó pegada arrancando sin
+                  esperar los 30s del sweep. */}
               <button
                 className="danger"
                 onClick={() => onDelete(s.id)}

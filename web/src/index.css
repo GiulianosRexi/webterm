@@ -98,6 +98,7 @@ button:hover,
 .terminal-host .xterm { height: 100%; }
 
 .status[data-state="readonly"] .dot { background: var(--warn); }
+.status[data-state="starting"] .dot { background: var(--warn); }
 
 .topbar .cwd {
   color: var(--fg-dim);
@@ -175,6 +176,9 @@ button:hover,
 
 .session .dot[data-status="running"] { background: var(--accent); }
 .session .dot[data-status="exited"] { background: var(--danger); }
+/* starting reusa --warn: ya es "en tránsito" en el status del topbar
+   (connecting, readonly), así que el mismo color dice lo mismo acá. */
+.session .dot[data-status="starting"] { background: var(--warn); }
 
 .session .name {
   flex: 1 1 auto;
@@ -220,6 +224,15 @@ button:hover,
 .session .actions .danger:hover {
   border-color: var(--danger);
   color: var(--danger);
+}
+
+/* Reemplaza a los botones de Matar/Reanudar mientras la sesión arranca: no
+   es clickeable a propósito, solo indica que hay que esperar. */
+.session .actions .starting-hint {
+  padding: 0 5px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--fg-dim);
 }
 
 .main {

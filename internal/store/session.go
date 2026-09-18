@@ -14,8 +14,12 @@ import (
 type PtyStatus string
 
 const (
-	StatusRunning PtyStatus = "running"
-	StatusExited  PtyStatus = "exited"
+	// StatusStarting es la ventana entre que el orquestador inserta la fila y
+	// el daemon confirma el spawn. No necesita migración: pty_status es un
+	// TEXT sin CHECK.
+	StatusStarting PtyStatus = "starting"
+	StatusRunning  PtyStatus = "running"
+	StatusExited   PtyStatus = "exited"
 )
 
 // ExitReason explica por qué murió una sesión. Importa distinguirlas: un
@@ -24,11 +28,14 @@ const (
 type ExitReason string
 
 const (
-	ReasonNormal         ExitReason = "normal"
-	ReasonKilled         ExitReason = "killed"
-	ReasonBackendRestart ExitReason = "backend_restart"
-	ReasonOrphaned       ExitReason = "orphaned"
-	ReasonSpawnFailed    ExitReason = "spawn_failed"
+	ReasonNormal ExitReason = "normal"
+	ReasonKilled ExitReason = "killed"
+	// ReasonDaemonRestart es lo que le pasó a las sesiones cuando el daemon
+	// arrancó de nuevo. Antes se llamaba backend_restart, cuando backend y
+	// daemon eran el mismo proceso.
+	ReasonDaemonRestart ExitReason = "daemon_restart"
+	ReasonOrphaned      ExitReason = "orphaned"
+	ReasonSpawnFailed   ExitReason = "spawn_failed"
 )
 
 // Session es la fila de una sesión. work_status, kanban_status y folder_id se
@@ -104,6 +111,19 @@ func scanSession(row interface{ Scan(...any) error }) (*Session, error) {
 }
 
 // CreateSession inserta la fila y completa los timestamps que falten.
+//
+// Ojo con el default de PtyStatus: una fila sin estado explícito entra como
+// running. Es legacy de M2, cuando el pty nacía en el mismo proceso que
+// insertaba y la fila ya era cierta al volver de acá. Desde M10 el único que
+// crea sesiones de verdad es control.Create, que SIEMPRE pasa starting porque
+// el pty lo spawnea otro proceso y todavía no existe cuando esto corre.
+//
+// Se deja como está en vez de defaultear a starting porque cambiarlo ahora
+// movería a todos los tests que arman filas a mano —que son los que se apoyan
+// en el default— sin arreglar ningún camino de producción. Pero es una trampa:
+// una fila creada sin estado queda diciendo que hay un pty detrás, y lo único
+// que la corrige es el sweep, 30 s después. Si escribís código nuevo que
+// inserta sesiones, poné el estado explícito.
 func (s *Store) CreateSession(sess *Session) error {
 	now := time.Now().UnixMilli()
 	if sess.CreatedAt == 0 {
@@ -208,6 +228,60 @@ func (s *Store) MarkExited(id string, reason ExitReason, code *int) error {
 		StatusExited, string(reason), code, now, now, id)
 }
 
+// MarkExitedIfUnchanged marca la muerte solo si la fila sigue exactamente como
+// la leyó ActiveSessions, y dice si le tocó a ella hacerlo.
+//
+// Es MarkExited con un compare-and-swap en el mismo UPDATE, y ese CAS es lo
+// único que hace atómico al sweep del orquestador. Cubre dos carreras
+// distintas, y ninguna de las dos se puede cerrar chequeando antes con un
+// SELECT —eso achica la ventana, no la elimina—:
+//
+//   - la sesión murió mientras el sweep corría: su exit_reason real —normal,
+//     killed— ya lo escribió el reap, y sin el CAS el sweep se lo pisaría con
+//     su motivo genérico. Dato corrupto que el usuario ve en la UI.
+//   - la sesión NACIÓ mientras el sweep corría: entró en ActiveSessions en
+//     starting y todavía no estaba en LiveIDs, pero para cuando el sweep va a
+//     marcarla ya tiene pty y la fila dice running. Sin el CAS el sweep mata en
+//     la base una sesión viva, y eso no se autorrepara (ver el test
+//     TestSweepNoMataUnaSesionQueEstaNaciendo en internal/control).
+//
+// El CAS compara las dos columnas que describen "en qué momento de su vida
+// estaba esta fila": pty_status y last_active_at. Alcanzaría con la segunda
+// —TODA transición de estado la bumpea: MarkRunning, MarkStarting, MarkExited y
+// esta misma— pero last_active_at tiene resolución de milisegundo, así que dos
+// escrituras del mismo milisegundo se ven iguales. Sumar pty_status tapa
+// justamente el caso que trajo el bug (starting → running), que es el que puede
+// pasar rápido. Para colarse ahora hay que terminar en el mismo estado Y en el
+// mismo milisegundo.
+//
+// La contracara del CAS: cualquier escritura inocente sobre la fila —un
+// TouchActive de un attach, un UpdateSize— hace que este barrido no la toque.
+// Es el lado seguro del error y se corrige solo en el barrido siguiente, 30 s
+// después.
+//
+// Cero filas afectadas NO es ErrNotFound: es el caso normal de "la fila cambió"
+// (o de una borrada mientras tanto), y por eso la firma devuelve un bool en vez
+// de mentir con un error.
+func (s *Store) MarkExitedIfUnchanged(prev ActiveSession, reason ExitReason, code *int) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now().UnixMilli()
+	res, err := s.db.Exec(`
+		UPDATE sessions
+		SET pty_status = ?, exit_reason = ?, exit_code = ?, exited_at = ?, last_active_at = ?
+		WHERE id = ? AND pty_status = ? AND last_active_at = ?`,
+		StatusExited, string(reason), code, now, now,
+		prev.ID, prev.PtyStatus, prev.LastActiveAt)
+	if err != nil {
+		return false, fmt.Errorf("marcando la salida de %s: %w", prev.ID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
 // MarkRunning vuelve a marcar la sesión como viva y borra los rastros de la
 // salida anterior, para que la UI no muestre un exit code junto a una sesión
 // que está corriendo.
@@ -246,43 +320,60 @@ func (s *Store) DeleteSession(id string) error {
 	return s.execAffecting(`DELETE FROM sessions WHERE id = ?`, id)
 }
 
-// RunningIDs devuelve los ids que la DB cree vivos. El manager lo usa para
-// detectar filas que quedaron desincronizadas de su mapa de sesiones vivas.
-func (s *Store) RunningIDs() ([]string, error) {
-	rows, err := s.db.Query(`SELECT id FROM sessions WHERE pty_status = ?`, StatusRunning)
+// ActiveSession es una fila que la base cree con proceso detrás, junto con lo
+// que hace falta para detectar que cambió después de leerla.
+//
+// No es un Session entero a propósito: es la entrada de un CAS, y lo único que
+// le compete son las columnas contra las que se compara.
+type ActiveSession struct {
+	ID           string
+	PtyStatus    PtyStatus
+	LastActiveAt int64
+}
+
+// ActiveSessions devuelve las filas que la DB cree con proceso detrás: las que
+// están corriendo y las que están arrancando. El sweep del orquestador las
+// contrasta contra lo que el daemon dice tener vivo.
+//
+// Incluir starting no es cosmético: una fila que quedó ahí porque el
+// orquestador crasheó entre el insert y el spawn no la levantaría nadie más.
+// Pero es también lo que obliga a devolver pty_status y last_active_at y no
+// solo el id: una fila en starting puede convertirse en una sesión viva entre
+// esta lectura y el UPDATE del sweep, y el CAS de MarkExitedIfUnchanged es lo
+// que evita que el sweep la mate. Antes esto era ActiveIDs y devolvía ids
+// pelados, que es información insuficiente para escribir sin riesgo.
+func (s *Store) ActiveSessions() ([]ActiveSession, error) {
+	rows, err := s.db.Query(
+		`SELECT id, pty_status, last_active_at FROM sessions WHERE pty_status IN (?, ?)`,
+		StatusRunning, StatusStarting)
 	if err != nil {
-		return nil, fmt.Errorf("listando sesiones vivas: %w", err)
+		return nil, fmt.Errorf("listando sesiones activas: %w", err)
 	}
 	defer rows.Close()
 
-	ids := []string{}
+	out := []ActiveSession{}
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+		var a ActiveSession
+		if err := rows.Scan(&a.ID, &a.PtyStatus, &a.LastActiveAt); err != nil {
 			return nil, err
 		}
-		ids = append(ids, id)
+		out = append(out, a)
 	}
-	return ids, rows.Err()
+	return out, rows.Err()
 }
 
-// ReconcileBoot marca como muertas todas las sesiones que la DB dejó vivas en
-// la ejecución anterior. El pty es hijo del backend: si el backend arrancó de
-// nuevo, ninguna sobrevivió. Devuelve cuántas filas corrigió.
-func (s *Store) ReconcileBoot() (int, error) {
+// MarkStarting deja la fila lista para que el daemon la spawnee, borrando los
+// rastros de la salida anterior para que la UI no muestre un exit code al lado
+// de una sesión que está arrancando.
+func (s *Store) MarkStarting(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	now := time.Now().UnixMilli()
-	res, err := s.db.Exec(`
+	return s.execAffecting(`
 		UPDATE sessions
-		SET pty_status = ?, exit_reason = ?, exited_at = ?
-		WHERE pty_status = ?`,
-		StatusExited, string(ReasonBackendRestart), now, StatusRunning)
-	if err != nil {
-		return 0, fmt.Errorf("reconciliando el arranque: %w", err)
-	}
-	n, err := res.RowsAffected()
-	return int(n), err
+		SET pty_status = ?, exit_reason = NULL, exit_code = NULL, exited_at = NULL,
+		    last_active_at = ?
+		WHERE id = ?`,
+		StatusStarting, time.Now().UnixMilli(), id)
 }
 
 // execAffecting corre un statement que tiene que tocar exactamente una fila y

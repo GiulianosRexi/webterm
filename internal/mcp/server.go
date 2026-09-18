@@ -15,7 +15,7 @@ import (
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/giuliano/webterm/internal/session"
+	"github.com/giuliano/webterm/internal/control"
 	"github.com/giuliano/webterm/internal/store"
 )
 
@@ -34,7 +34,7 @@ type Sessions interface {
 	ListKV(id string) (map[string]string, error)
 	UpdateMeta(id string, p store.MetaPatch) (*store.Session, error)
 	AddResource(id, rawURL, system, typ string) (*store.Resource, error)
-	ListResources(ctx context.Context, id string) ([]*session.LinkedResource, error)
+	ListResources(ctx context.Context, id string) ([]*control.LinkedResource, error)
 }
 
 // Server es el servidor MCP de WebTerm.

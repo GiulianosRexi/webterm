@@ -7,13 +7,14 @@ una UI web. Backend en Go (pty real vía `creack/pty`), frontend React plano con
 El diseño completo y el roadmap por milestones están en
 [`webterm-diseno.md`](./webterm-diseno.md).
 
-## Estado: M9
+## Estado: M10
 
 - [x] **M1** — terminal web básica: un pty por conexión WebSocket, input/output,
       resize, true color, mouse.
 - [x] **M2** — persistencia de sesiones (SQLite + session manager) y ABM.
 - [x] **M8** — recursos externos linkeados a una sesión (PRs de GitHub).
 - [x] **M9** — servidor MCP para que Claude escriba en su sesión.
+- [x] **M10** — daemon de sesiones.
 - [ ] **M3** — UI multi-terminal (tabs). ← próximo
 - [ ] **M4** — folders.
 - [ ] **M5** — CLI local `webterm`.
@@ -22,11 +23,23 @@ El diseño completo y el roadmap por milestones están en
 
 Los números son ids estables, no orden de ejecución: M8 va antes que M3.
 
-Desde M2 el pty vive en el backend, no en la conexión: cerrar la pestaña solo
-cierra el socket. El estado, el KV y el último MB de output de cada sesión
-quedan en SQLite, así que sobreviven al reinicio del backend — el proceso no,
-porque es hijo suyo, y al arrancar se reconcilian a `exited` conservando el
+Desde M2 el pty no vive en la conexión: cerrar la pestaña solo cierra el
+socket, no el proceso. Desde M10 el pty tampoco vive en el mismo proceso que
+sirve la UI: es hijo del **daemon**, un segundo proceso aparte del
+**orquestador** (todo lo demás — HTTP, API, MCP, recursos, KV). Reiniciar el
+orquestador, que es lo que se hace todo el rato mientras se desarrolla sobre
+WebTerm, ya no mata nada. El detalle de esa partición está en "Arquitectura:
+daemon y orquestador" más abajo. El estado, el KV y el último MB de output de
+cada sesión quedan en SQLite, así que sobreviven también a un reinicio del
+daemon — el proceso no, y al arrancar se reconcilian a `exited` conservando el
 historial.
+
+Hay un reinicio destructivo que esta feature no evita: **la primera vez que
+se levanta el binario nuevo**, no hay daemon previo sosteniendo nada, así que
+las sesiones que estaban vivas en el proceso viejo (de antes de M10, con el
+pty en el mismo proceso que la UI) se pierden en ese arranque puntual —
+quedan marcadas `daemon_restart`, con el historial intacto. De ahí en
+adelante cada recompilación reusa el mismo daemon y no toca una sola sesión.
 
 ## Correr
 
@@ -51,11 +64,57 @@ Flags del backend:
 | `-addr` | `127.0.0.1:7788` | dirección de escucha |
 | `-static` | `web/dist` | carpeta con el build del frontend |
 | `-shell` | `$SHELL` | shell a spawnear |
-| `-token` | `$WEBTERM_TOKEN`, o autogenerado | token de acceso |
+| `-token` | `$WEBTERM_TOKEN`, o el persistido en disco | token de acceso. El archivo solo se genera cuando el server **no** escucha únicamente en loopback: con el `-addr` por default no hay ningún token en disco, porque no hace falta |
 | `-no-auth` | `false` | no pedir token aunque escuche en la red |
 | `-db` | `~/.webterm/webterm.db` | base con el estado de las sesiones |
 | `-history-bytes` | `1048576` | cuánto output se guarda por sesión |
 | `-mcp-config` | — | imprime cómo registrar el servidor MCP y sale |
+
+El socket, el lock y el log del daemon no son flags propios: se derivan del
+path de `-db` (`~/.webterm/webterm.db` da `webterm.sock`, `webterm.lock` y
+`webterm.log` al lado; `~/.webterm/dev.db` da su propio trío). No son rutas
+fijas a propósito: si lo fueran, levantar una instancia de desarrollo con otro
+`-db` conectaría igual al daemon de producción y le spawnearía y mataría
+sesiones ajenas — peor que el problema que esta feature vino a resolver. La
+derivación está en `internal/daemon/paths.go`.
+
+El token de acceso también pasó a persistirse en disco, al lado de la base
+(`~/.webterm/webterm.token` para el `-db` default). Antes se regeneraba en
+cada arranque; con sesiones que sobreviven al reinicio del orquestador, un
+token nuevo invalidaría el `WEBTERM_TOKEN` que ya está inyectado en los ptys
+vivos y le rompería el servidor MCP justo adentro de las sesiones que este
+milestone existe para salvar. El env var y el flag `-token` siguen ganando
+si los pasás; el archivo es solo el fallback autogenerado.
+
+Subcomandos de `webterm daemon` (mismo binario, aceptan los mismos `-db` y
+`-history-bytes` que el orquestador, con los mismos defaults, porque los
+necesitan para derivar las rutas y, en `restart`, para relanzarse con los
+mismos parámetros):
+
+| Subcomando | Qué hace |
+|---|---|
+| `webterm daemon` | corre el daemon en foreground; en uso normal lo levanta solo el orquestador on-demand, no hace falta correrlo a mano |
+| `webterm daemon status` | pid, versión de protocolo y cantidad de sesiones vivas; avisa si el binario actual habla un protocolo distinto al que está corriendo |
+| `webterm daemon stop` | le manda SIGTERM y espera a que suelte el flock — **mata las sesiones vivas** |
+| `webterm daemon restart` | `stop` seguido de un arranque nuevo — **mata las sesiones vivas** |
+| `webterm daemon logs` | vuelca el contenido de `webterm.log` |
+
+El subcomando se reconoce antes o después de los flags (`webterm daemon status
+-db x.db` y `webterm daemon -db x.db status` son lo mismo). Cualquier otra
+palabra como primer argumento es un error de uso y corta con código 2: sin eso,
+un `webterm status` —typo de `webterm daemon status`— arrancaba el orquestador
+ignorando todos los flags que vinieran después, incluido el `-db`.
+
+`stop` y `restart` avisan cuántas sesiones vivas se van a llevar **antes** de
+mandar la señal, y piden confirmación si hay una terminal del otro lado. En un
+script o en un `make` sin tty el aviso sale igual y la operación sigue; `-yes`
+saltea la confirmación.
+
+Atajos en el Makefile: `make daemon-status`, `make daemon-restart`,
+`make daemon-stop`. `restart` y `stop` matan sesiones a propósito: son el
+único caso que esta feature no cubre, y por eso el Makefile lo dice en la
+misma línea del target (`## MATA LAS SESIONES VIVAS`) en vez de dejarlo
+como letra chica.
 
 ## Acceso desde otra máquina de la red
 
@@ -113,31 +172,117 @@ reales. El test que define M2 es `TestSesionSobreviveAlCierreDelSocket`: abre un
 WebSocket, corre un comando, **cierra el socket**, y verifica que la sesión
 sigue viva y que al reattachear llega el replay con lo de antes.
 
+## Arquitectura: daemon y orquestador
+
+Desde M10 esto no es un solo proceso. El backend se partió en dos:
+
+- el **daemon** es dueño de los ptys y del historial de output, y nada más.
+  Es lo que hoy vive en `internal/daemon`, corriendo por encima de
+  `internal/session` (spawn, pump, reap, hub, ring, writer), que no cambió de
+  lógica, solo de proceso.
+- el **orquestador** es todo lo demás: HTTP, la UI estática, la API REST, el
+  servidor MCP, los recursos externos, el KV. Su manager,
+  `internal/control`, resuelve contra la base directamente todo lo que no es
+  un pty (`List`, `Get`, `UpdateMeta`, KV, recursos) y le delega al daemon
+  solo `Create`, `Attach`, `Kill` y `Restart`.
+
+Los dos hablan por un socket Unix: `internal/ptyapi` define el contrato
+(cinco métodos: `Spawn`, `Attach`, `Kill`, `LiveIDs` y `StartedAt`) y `internal/daemonclient`
+es la implementación que lo habla de verdad, así que el orquestador no
+distingue si del otro lado hay un daemon en otro proceso o —como en los
+tests— un `internal/session.Manager` embebido en el mismo.
+
+El orquestador levanta el daemon on-demand (`ensureDaemon`, en
+`cmd/webterm/main.go`): si el socket ya contesta lo reusa tal cual, si no lo
+spawnea desatado del propio proceso (`Setsid`, para que un Ctrl-C a la
+terminal del orquestador no se lleve puesto también al daemon —
+exactamente lo que esta partición existe para evitar) y espera a que
+responda. Mientras vive, el daemon sostiene un flock exclusivo sobre
+`webterm.lock`, así que dos procesos nunca terminan sirviendo la misma base.
+
+Los dos hablan un protocolo versionado (`daemon.ProtocolVersion`, hoy `1`):
+si recompilaste el binario y el daemon que sigue corriendo es de una versión
+vieja, el orquestador no lo reinicia solo — corta con un mensaje pidiendo
+`webterm daemon restart` a mano, porque eso mata sesiones y tiene que ser
+una decisión explícita, nunca algo que pase de rebote al levantar el
+orquestador. Los subcomandos de `webterm daemon` (`status`, `stop`,
+`restart`, `logs`) están en "Correr", más arriba.
+
+Si el daemon se cae del todo (un `kill -9`, un crash), el orquestador no se
+queda esperando: su sweep, al no poder preguntarle qué tiene vivo, intenta
+levantarlo de nuevo, así que la recuperación queda acotada al intervalo del
+barrido (30 s). Mientras tanto no inventa —no marca nada muerta sin poder
+consultar—, `/api/health` lo dice (`"daemon": "unreachable"`, sin el campo
+`sessions`, porque cero no es lo mismo que no saber) y las sesiones se pueden
+seguir attacheando **en modo lectura**: el historial vive en la base, que es del
+orquestador, así que mirar qué pasó no depende del daemon.
+
+El invariante que sostiene la partición: **agregar una feature al orquestador
+no tiene que requerir tocar el daemon**. Por eso el daemon no sabe qué es un
+título, un token o un PR de GitHub — sumar cualquiera de esas cosas es tocar
+`internal/control` y `internal/store`, nunca `internal/daemon`. Es la misma
+separación que `dockerd`/`containerd`, por el mismo motivo: que la capa que
+cambia seguido no sostenga los procesos que tienen que durar.
+
+Esa misma libertad impone una restricción al store: **las migraciones tienen
+que ser aditivas**. El flujo canónico —tocar `control` + `store`, recompilar,
+reiniciar solo el orquestador— corre las migraciones sobre una base que el
+daemon viejo tiene abierta y sigue usando con las queries de antes. Sumar una
+tabla, un índice o una columna es invisible para él; renombrar o borrar una
+columna, cambiar un tipo o endurecer un CHECK lo rompe en pleno uso, y el
+síntoma aparece del lado equivocado (el historial dejando de guardarse) mientras
+el orquestador nuevo se ve perfecto. Si una migración destructiva es inevitable,
+va junto con una subida de `daemon.ProtocolVersion`, que obliga al
+`webterm daemon restart` explícito.
+
+La contraparte de esa libertad: **reiniciar el daemon sí mata todas las
+sesiones vivas**, porque el pty es hijo suyo. `webterm daemon stop` y
+`webterm daemon restart` hacen exactamente eso — es el único caso que esta
+feature no cubre, y por diseño es un acto explícito y ruidoso (subcomando
+aparte, con su propio target de Makefile), no algo que pase de rebote
+reiniciando el orquestador — que es justamente lo que esta partición vino a
+comprar.
+
 ## Estructura
 
 ```
-cmd/webterm/          entrypoint y flags
-internal/store/       SQLite: sesiones, KV, historial de output y recursos
-internal/resources/   providers de sistemas externos (GitHub), caché con TTL
-internal/mcp/         servidor MCP: las tools sobre el session manager
-internal/session/     session manager: ptys vivos, fan-out, reconciliación
-internal/server/      HTTP, static file server, API REST, WebSocket
-internal/terminal/    wrapper del pty (spawn, read/write, resize, wait)
-web/                  frontend Vite + React + xterm.js
+cmd/webterm/            entrypoint, flags y arranque on-demand del daemon
+internal/store/         SQLite: sesiones, KV, historial de output y recursos
+internal/resources/     providers de sistemas externos (GitHub), caché con TTL
+internal/mcp/           servidor MCP: las tools sobre el control manager
+internal/control/       manager del orquestador: metadata, KV y recursos contra
+                         la base; delega los ptys al daemon
+internal/ptyapi/        contrato entre quien tiene los ptys (daemon o manager
+                         en proceso) y quien los usa
+internal/daemon/        proceso dueño de los ptys: lado servidor del socket
+internal/daemonclient/  lado cliente del socket: habla ptyapi contra un daemon
+                         remoto
+internal/session/       ptys vivos: spawn, pump, reap, hub, ring, writer —
+                         vive en el daemon, ya no hace ABM de sesiones
+internal/server/        HTTP, static file server, API REST, WebSocket
+internal/terminal/      wrapper del pty (spawn, read/write, resize, wait)
+web/                    frontend Vite + React + xterm.js
 ```
 
 ## Estado de las sesiones
 
-El pty es hijo del proceso Go: si el backend muere, mueren todas las sesiones.
-Por eso lo que persiste es el *registro* de la sesión, no el proceso. Hay cinco
-mecanismos que mantienen la DB sincronizada con la realidad:
+El pty es hijo del daemon, no del orquestador: si el daemon muere, mueren
+todas las sesiones (reiniciar el orquestador no las toca — ver "Arquitectura:
+daemon y orquestador"). Por eso lo que persiste en la base es el *registro* de
+la sesión, no el proceso. Antes de tener pty el registro pasa por `starting`,
+la ventana entre que el orquestador inserta la fila y el daemon confirma el
+spawn.
+
+Hay seis mecanismos que mantienen la DB sincronizada con la realidad:
 
 | Caso | Cómo se detecta | `exit_reason` |
 |---|---|---|
-| el shell hace `exit` | `cmd.Wait()` | `normal` |
-| el shell muere pero un nieto retiene el pty | `cmd.Wait()` (el `Read` no da EOF nunca) | `normal` |
-| se reinició el backend | barrido al abrir la base, antes de escuchar | `backend_restart` |
-| deriva entre la DB y las sesiones vivas | sweep cada 30 s | `orphaned` |
+| el shell hace `exit` | `cmd.Wait()`, en el daemon | `normal` |
+| el shell muere pero un nieto retiene el pty | `cmd.Wait()` (el `Read` no da EOF nunca), en el daemon | `normal` |
+| el daemon no pudo spawnear el pty | falla `pty.Spawn` al crear o reanudar | `spawn_failed` |
+| se reinició el daemon (`daemon stop`/`restart`) | el reap del propio daemon, que las mata al apagarse | `daemon_restart` |
+| el daemon murió sin poder reapear (`kill -9`) | sweep del orquestador contra lo que el daemon reporta vivo | `daemon_restart` |
+| deriva entre la DB y las sesiones vivas | mismo sweep, cada 30 s | `orphaned` |
 | lo mataste vos | `POST /kill` | `killed` |
 
 Reanudar (`POST /restart`) reusa la misma fila: conserva id, título, cwd, KV e
@@ -147,6 +292,7 @@ historial, y deja un marcador `— sesión reanudada —` en el stream.
 
 | Método | Ruta | Qué hace |
 |---|---|---|
+| `GET` | `/api/health` | estado del proceso y del daemon (ver abajo) |
 | `GET` | `/api/sessions` | lista con estado, título y última actividad |
 | `POST` | `/api/sessions` | crea y spawnea: `{title?, description?, cwd?, cols, rows}` |
 | `GET` | `/api/sessions/{id}` | detalle |
@@ -163,6 +309,18 @@ historial, y deja un marcador `— sesión reanudada —` en el stream.
 
 `kill` y `DELETE` están separados a propósito: matar el proceso no tiene por
 qué llevarse el historial.
+
+`/api/health` responde 200 aunque el daemon no conteste —el orquestador está
+sano, lo degradado es lo que ve— y lo dice en el cuerpo:
+
+```jsonc
+{"status": "ok",       "auth": true, "daemon": "ok",          "sessions": 3}
+{"status": "degraded", "auth": true, "daemon": "unreachable", "daemon_error": "..."}
+```
+
+Con el daemon caído el campo `sessions` **no viene**: "no sé cuántas hay" no es
+"no hay ninguna", y mandar un 0 hacía que este endpoint se contradijera con
+`/api/sessions`.
 
 El KV ya está expuesto aunque la UI todavía no lo use: es la superficie exacta
 que va a consumir `webterm set/get state` en M5.
@@ -197,6 +355,10 @@ terminal. Se registra una sola vez:
 ```bash
 webterm -mcp-config          # imprime el comando con tu host, puerto y token
 ```
+
+Pasale el mismo `-addr` (y el mismo `-db`) con el que vas a levantar el server:
+la línea del `Authorization` solo aparece si esa combinación requiere token, y
+sale con el token que el server realmente va a pedir.
 
 ```bash
 claude mcp add --transport http webterm http://127.0.0.1:7788/mcp \
