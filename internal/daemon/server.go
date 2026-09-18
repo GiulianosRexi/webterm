@@ -146,13 +146,6 @@ func (s *Server) handleKill(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleAttach todavía no existe: la tarea 7 lo reemplaza por el upgrade al
-// streaming de verdad. El stub devuelve 501 para que el router compile y las
-// otras cuatro rutas queden probadas ya.
-func (s *Server) handleAttach(w http.ResponseWriter, _ *http.Request) {
-	http.Error(w, "no implementado", http.StatusNotImplemented)
-}
-
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

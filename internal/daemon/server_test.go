@@ -278,3 +278,18 @@ func waitForSocket(t *testing.T, path string) {
 	}
 	t.Fatalf("el socket %s nunca aceptó conexiones", path)
 }
+
+// esperar reintenta cond hasta que sea verdadera o se agote el plazo. Los ptys
+// son asincrónicos: un sleep fijo es la receta de un test que falla una vez
+// cada veinte.
+func esperar(t *testing.T, plazo time.Duration, motivo string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(plazo)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timeout esperando: %s", motivo)
+}
