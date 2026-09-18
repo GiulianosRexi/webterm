@@ -4,7 +4,11 @@ import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 
-export type ConnState = 'connecting' | 'open' | 'readonly' | 'closed' | 'exited'
+// starting es distinto de readonly: readonly es una sesión que YA terminó (el
+// replay es todo lo que va a haber), starting es una que TODAVÍA no tiene pty
+// del otro lado. Contarlas igual haría pensar que la sesión murió cuando en
+// realidad está a milisegundos de arrancar.
+export type ConnState = 'connecting' | 'open' | 'readonly' | 'closed' | 'exited' | 'starting'
 
 // Protocolo con el backend:
 //   browser -> server : binario = input crudo | texto JSON = control (resize)
@@ -71,6 +75,11 @@ export function TerminalView({
     // Una sesión ya terminada se attachea igual: llega el historial y nada
     // más, así que la mostramos de solo lectura.
     let live = true
+    // Guardamos el pty_status que reportó "attached" para poder distinguir,
+    // recién en "ready", entre una sesión de solo lectura (terminó) y una que
+    // todavía está arrancando (starting): ninguna de las dos tiene un pty al
+    // que mandarle datos, pero el mensaje al usuario tiene que ser distinto.
+    let ptyStatus = 'running'
 
     const sendResize = () => {
       if (ws.readyState !== WebSocket.OPEN) return
@@ -93,11 +102,12 @@ export function TerminalView({
       switch (msg.type) {
         case 'attached':
           live = msg.session.pty_status === 'running'
+          ptyStatus = msg.session.pty_status
           break
         case 'ready':
           // El replay ya está escrito; recién acá sabemos si hay pty del otro
           // lado al que mandarle nuestro tamaño.
-          onStateRef.current(live ? 'open' : 'readonly')
+          onStateRef.current(live ? 'open' : ptyStatus === 'starting' ? 'starting' : 'readonly')
           if (live) {
             fit.fit()
             sendResize()

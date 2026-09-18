@@ -1,4 +1,8 @@
-export type PtyStatus = 'running' | 'exited'
+// starting es la ventana entre que el orquestador inserta la fila y el daemon
+// confirma el spawn (ver internal/store/session.go). Normal que dure
+// milisegundos, pero el frontend tiene que saber que no es lo mismo que
+// exited: no hay proceso todavía, pero tampoco terminó nada.
+export type PtyStatus = 'running' | 'exited' | 'starting'
 
 export interface Session {
   id: string
