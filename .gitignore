@@ -9,6 +9,10 @@ web/dist/
 # Editor / OS
 .DS_Store
 
+# Worktrees de agentes: es una copia completa del repo adentro del repo, sin
+# trackear. Sin esta línea, un `git add -A` la commitea entera.
+.claude/worktrees/
+
 # Caché incremental de tsc (se regenera en cada build)
 web/tsconfig.tsbuildinfo
 

@@ -208,12 +208,32 @@ una decisión explícita, nunca algo que pase de rebote al levantar el
 orquestador. Los subcomandos de `webterm daemon` (`status`, `stop`,
 `restart`, `logs`) están en "Correr", más arriba.
 
+Si el daemon se cae del todo (un `kill -9`, un crash), el orquestador no se
+queda esperando: su sweep, al no poder preguntarle qué tiene vivo, intenta
+levantarlo de nuevo, así que la recuperación queda acotada al intervalo del
+barrido (30 s). Mientras tanto no inventa —no marca nada muerta sin poder
+consultar—, `/api/health` lo dice (`"daemon": "unreachable"`, sin el campo
+`sessions`, porque cero no es lo mismo que no saber) y las sesiones se pueden
+seguir attacheando **en modo lectura**: el historial vive en la base, que es del
+orquestador, así que mirar qué pasó no depende del daemon.
+
 El invariante que sostiene la partición: **agregar una feature al orquestador
 no tiene que requerir tocar el daemon**. Por eso el daemon no sabe qué es un
 título, un token o un PR de GitHub — sumar cualquiera de esas cosas es tocar
 `internal/control` y `internal/store`, nunca `internal/daemon`. Es la misma
 separación que `dockerd`/`containerd`, por el mismo motivo: que la capa que
 cambia seguido no sostenga los procesos que tienen que durar.
+
+Esa misma libertad impone una restricción al store: **las migraciones tienen
+que ser aditivas**. El flujo canónico —tocar `control` + `store`, recompilar,
+reiniciar solo el orquestador— corre las migraciones sobre una base que el
+daemon viejo tiene abierta y sigue usando con las queries de antes. Sumar una
+tabla, un índice o una columna es invisible para él; renombrar o borrar una
+columna, cambiar un tipo o endurecer un CHECK lo rompe en pleno uso, y el
+síntoma aparece del lado equivocado (el historial dejando de guardarse) mientras
+el orquestador nuevo se ve perfecto. Si una migración destructiva es inevitable,
+va junto con una subida de `daemon.ProtocolVersion`, que obliga al
+`webterm daemon restart` explícito.
 
 La contraparte de esa libertad: **reiniciar el daemon sí mata todas las
 sesiones vivas**, porque el pty es hijo suyo. `webterm daemon stop` y
@@ -260,7 +280,8 @@ Hay seis mecanismos que mantienen la DB sincronizada con la realidad:
 | el shell hace `exit` | `cmd.Wait()`, en el daemon | `normal` |
 | el shell muere pero un nieto retiene el pty | `cmd.Wait()` (el `Read` no da EOF nunca), en el daemon | `normal` |
 | el daemon no pudo spawnear el pty | falla `pty.Spawn` al crear o reanudar | `spawn_failed` |
-| se reinició el daemon | sweep del orquestador contra lo que el daemon reporta vivo | `daemon_restart` |
+| se reinició el daemon (`daemon stop`/`restart`) | el reap del propio daemon, que las mata al apagarse | `daemon_restart` |
+| el daemon murió sin poder reapear (`kill -9`) | sweep del orquestador contra lo que el daemon reporta vivo | `daemon_restart` |
 | deriva entre la DB y las sesiones vivas | mismo sweep, cada 30 s | `orphaned` |
 | lo mataste vos | `POST /kill` | `killed` |
 
@@ -271,6 +292,7 @@ historial, y deja un marcador `— sesión reanudada —` en el stream.
 
 | Método | Ruta | Qué hace |
 |---|---|---|
+| `GET` | `/api/health` | estado del proceso y del daemon (ver abajo) |
 | `GET` | `/api/sessions` | lista con estado, título y última actividad |
 | `POST` | `/api/sessions` | crea y spawnea: `{title?, description?, cwd?, cols, rows}` |
 | `GET` | `/api/sessions/{id}` | detalle |
@@ -287,6 +309,18 @@ historial, y deja un marcador `— sesión reanudada —` en el stream.
 
 `kill` y `DELETE` están separados a propósito: matar el proceso no tiene por
 qué llevarse el historial.
+
+`/api/health` responde 200 aunque el daemon no conteste —el orquestador está
+sano, lo degradado es lo que ve— y lo dice en el cuerpo:
+
+```jsonc
+{"status": "ok",       "auth": true, "daemon": "ok",          "sessions": 3}
+{"status": "degraded", "auth": true, "daemon": "unreachable", "daemon_error": "..."}
+```
+
+Con el daemon caído el campo `sessions` **no viene**: "no sé cuántas hay" no es
+"no hay ninguna", y mandar un 0 hacía que este endpoint se contradijera con
+`/api/sessions`.
 
 El KV ya está expuesto aunque la UI todavía no lo use: es la superficie exacta
 que va a consumir `webterm set/get state` en M5.

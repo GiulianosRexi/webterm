@@ -22,6 +22,14 @@ import (
 // tiene que comportarse mal a propósito, y el daemon de verdad nunca hace
 // esto (no es un caso que pueda reproducirse contra él).
 func TestAttachCortaSiElPeerNoMandaReady(t *testing.T) {
+	// Este test espera el timeout entero, así que con los 10 s de producción
+	// pagaba él solo diez segundos de suite por corrida. Lo que se prueba es
+	// que exista un límite, no cuál es, así que se lo baja acá y se lo
+	// restaura al salir.
+	original := handshakeTimeout
+	handshakeTimeout = 200 * time.Millisecond
+	defer func() { handshakeTimeout = original }()
+
 	upgrader := websocket.Upgrader{}
 	mudo := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -56,7 +64,8 @@ func TestAttachCortaSiElPeerNoMandaReady(t *testing.T) {
 		t.Fatal("attach contra un peer que nunca manda ready tendría que fallar")
 	}
 	// Margen generoso sobre handshakeTimeout: lo que importa es que haya un
-	// límite, no ajustarlo al milisegundo.
+	// límite, no ajustarlo al milisegundo. El margen es fijo y no proporcional
+	// para que bajar el timeout no vuelva frágil al test en una máquina cargada.
 	if elapsed > handshakeTimeout+5*time.Second {
 		t.Fatalf("attach tardó %s; handshakeTimeout (%s) tendría que haber cortado antes", elapsed, handshakeTimeout)
 	}

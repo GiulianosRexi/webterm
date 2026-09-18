@@ -35,7 +35,12 @@ const writeTimeout = 10 * time.Second
 // siempre, y como ptyapi.Client.Attach no toma contexto, no hay forma de
 // cancelarlo desde quien nos llama. Sin este deadline, un Attach colgado
 // cuelga para siempre el handler HTTP del orquestador que lo invocó.
-const handshakeTimeout = 10 * time.Second
+//
+// Es var y no const solo para que el test del peer mudo lo pueda bajar: ese
+// test espera el timeout entero y a 10 s era él solo el que hacía de
+// daemonclient el paquete más lento de la suite. Nadie lo escribe en
+// producción.
+var handshakeTimeout = 10 * time.Second
 
 // Attach abre el WebSocket y consume el handshake antes de devolver: al volver,
 // History() ya está completo y Output() es solo stream vivo.
