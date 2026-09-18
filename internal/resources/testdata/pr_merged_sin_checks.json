@@ -1,0 +1,10 @@
+{"data":{"repository":{"pullRequest":{
+  "number":9000,
+  "title":"proof of concept for flag-level disable auth check",
+  "url":"https://github.com/cli/cli/pull/9000",
+  "state":"MERGED","isDraft":false,"mergeable":"UNKNOWN",
+  "reviewDecision":"APPROVED",
+  "author":{"login":"andyfeller"},
+  "reviewThreads":{"totalCount":2,"nodes":[{"isResolved":true},{"isResolved":false}]},
+  "commits":{"nodes":[{"commit":{"statusCheckRollup":null}}]}
+}}}}
