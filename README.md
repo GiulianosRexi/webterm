@@ -64,7 +64,7 @@ Flags del backend:
 | `-addr` | `127.0.0.1:7788` | dirección de escucha |
 | `-static` | `web/dist` | carpeta con el build del frontend |
 | `-shell` | `$SHELL` | shell a spawnear |
-| `-token` | `$WEBTERM_TOKEN`, o el persistido en disco (se genera una vez) | token de acceso |
+| `-token` | `$WEBTERM_TOKEN`, o el persistido en disco | token de acceso. El archivo solo se genera cuando el server **no** escucha únicamente en loopback: con el `-addr` por default no hay ningún token en disco, porque no hace falta |
 | `-no-auth` | `false` | no pedir token aunque escuche en la red |
 | `-db` | `~/.webterm/webterm.db` | base con el estado de las sesiones |
 | `-history-bytes` | `1048576` | cuánto output se guarda por sesión |
@@ -95,9 +95,20 @@ mismos parámetros):
 |---|---|
 | `webterm daemon` | corre el daemon en foreground; en uso normal lo levanta solo el orquestador on-demand, no hace falta correrlo a mano |
 | `webterm daemon status` | pid, versión de protocolo y cantidad de sesiones vivas; avisa si el binario actual habla un protocolo distinto al que está corriendo |
-| `webterm daemon stop` | le manda SIGTERM y espera a que suelte el socket — **mata las sesiones vivas** |
+| `webterm daemon stop` | le manda SIGTERM y espera a que suelte el flock — **mata las sesiones vivas** |
 | `webterm daemon restart` | `stop` seguido de un arranque nuevo — **mata las sesiones vivas** |
 | `webterm daemon logs` | vuelca el contenido de `webterm.log` |
+
+El subcomando se reconoce antes o después de los flags (`webterm daemon status
+-db x.db` y `webterm daemon -db x.db status` son lo mismo). Cualquier otra
+palabra como primer argumento es un error de uso y corta con código 2: sin eso,
+un `webterm status` —typo de `webterm daemon status`— arrancaba el orquestador
+ignorando todos los flags que vinieran después, incluido el `-db`.
+
+`stop` y `restart` avisan cuántas sesiones vivas se van a llevar **antes** de
+mandar la señal, y piden confirmación si hay una terminal del otro lado. En un
+script o en un `make` sin tty el aviso sale igual y la operación sigue; `-yes`
+saltea la confirmación.
 
 Atajos en el Makefile: `make daemon-status`, `make daemon-restart`,
 `make daemon-stop`. `restart` y `stop` matan sesiones a propósito: son el
@@ -176,7 +187,7 @@ Desde M10 esto no es un solo proceso. El backend se partió en dos:
   solo `Create`, `Attach`, `Kill` y `Restart`.
 
 Los dos hablan por un socket Unix: `internal/ptyapi` define el contrato
-(cuatro métodos: `Spawn`, `Attach`, `Kill`, `LiveIDs`) y `internal/daemonclient`
+(cinco métodos: `Spawn`, `Attach`, `Kill`, `LiveIDs` y `StartedAt`) y `internal/daemonclient`
 es la implementación que lo habla de verdad, así que el orquestador no
 distingue si del otro lado hay un daemon en otro proceso o —como en los
 tests— un `internal/session.Manager` embebido en el mismo.
@@ -310,6 +321,10 @@ terminal. Se registra una sola vez:
 ```bash
 webterm -mcp-config          # imprime el comando con tu host, puerto y token
 ```
+
+Pasale el mismo `-addr` (y el mismo `-db`) con el que vas a levantar el server:
+la línea del `Authorization` solo aparece si esa combinación requiere token, y
+sale con el token que el server realmente va a pedir.
 
 ```bash
 claude mcp add --transport http webterm http://127.0.0.1:7788/mcp \
