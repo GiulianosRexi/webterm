@@ -21,6 +21,19 @@ var ErrNotLive = errors.New("la sesión no está corriendo")
 // reconstruir cuál era sin parsear el texto.
 var ErrAlreadyLive = errors.New("la sesión ya está corriendo")
 
+// ErrClosed lo devuelve Spawn cuando el dueño de los ptys se está apagando.
+//
+// Vive acá y no en la implementación en proceso porque tiene que sobrevivir el
+// viaje por el socket: si fuera un error concreto del manager local, un
+// errors.Is contra él andaría solo cuando el daemon está en el mismo proceso, y
+// esa es justamente la diferencia que este contrato existe para tapar.
+//
+// Viaja como 503: el que tiene los ptys está apagando. No es que la sesión no
+// exista (404), ni que no tenga proceso (410), ni que ya esté corriendo (409),
+// y a diferencia de esos tres reintentar contra el daemon que vuelve es una
+// respuesta sensata.
+var ErrClosed = errors.New("el dueño de los ptys está cerrado")
+
 // SpawnOpts describe el pty a arrancar.
 //
 // La fila en la base ya existe cuando esto llega: el que spawnea no inserta.

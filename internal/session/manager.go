@@ -25,11 +25,6 @@ const (
 // DefaultHistoryBytes es el cap de historial por sesión.
 const DefaultHistoryBytes int64 = 1 << 20
 
-// ErrClosed lo devuelve Spawn cuando el manager ya se apagó. Es un error y no
-// un no-op silencioso porque quien pidió la sesión tiene que enterarse de que
-// no va a existir: la fila ya quedó insertada del otro lado.
-var ErrClosed = errors.New("el manager de ptys está cerrado")
-
 // Config parametriza el manager. Es corta a propósito: todo lo que no sea el
 // pty —shell por defecto, variables de entorno, recursos externos— lo resuelve
 // el orquestador y llega resuelto en cada SpawnOpts.
@@ -137,8 +132,8 @@ func (m *Manager) Close() error {
 		_ = l.pty.Kill()
 	}
 	// El candado se suelta antes del Wait: ya con stop cerrado, cualquier Spawn
-	// que estaba esperando se va a encontrar con ErrClosed, así que no hace
-	// falta bloquearlo todo el tiempo que tarden los reaps.
+	// que estaba esperando se va a encontrar con ptyapi.ErrClosed, así que no
+	// hace falta bloquearlo todo el tiempo que tarden los reaps.
 	m.spawnMu.Unlock()
 
 	m.wg.Wait()
@@ -165,9 +160,13 @@ func (m *Manager) Spawn(o ptyapi.SpawnOpts) error {
 	m.spawnMu.Lock()
 	defer m.spawnMu.Unlock()
 
+	// El error es del contrato, no del paquete: quien pidió la sesión tiene que
+	// enterarse de que no va a existir —la fila ya quedó insertada del otro
+	// lado— y tiene que poder hacerlo igual esté el daemon en este proceso o
+	// del otro lado de un socket.
 	select {
 	case <-m.stop:
-		return ErrClosed
+		return ptyapi.ErrClosed
 	default:
 	}
 
