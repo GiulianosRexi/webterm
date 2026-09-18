@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/giuliano/webterm/internal/resources"
 	"github.com/giuliano/webterm/internal/session"
 	"github.com/giuliano/webterm/internal/store"
 )
@@ -26,6 +27,7 @@ func newTestServer(t *testing.T) (*httptest.Server, *session.Manager) {
 
 	mgr := session.NewManager(st, session.Config{
 		Shell: "/bin/bash", HistoryBytes: 1 << 20, SweepEvery: time.Hour,
+		Resources: resources.NewCache(resources.NewRegistry(proveedorFalso{})),
 	})
 	if err := mgr.Start(); err != nil {
 		t.Fatalf("manager.Start: %v", err)

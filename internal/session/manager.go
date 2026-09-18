@@ -1,14 +1,17 @@
 package session
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/giuliano/webterm/internal/resources"
 	"github.com/giuliano/webterm/internal/store"
 	"github.com/giuliano/webterm/internal/terminal"
 )
@@ -43,6 +46,10 @@ type Config struct {
 	Shell        string        // shell a spawnear; vacío = $SHELL
 	HistoryBytes int64         // cap de historial por sesión
 	SweepEvery   time.Duration // cada cuánto corre la verificación de invariante
+	// Resources resuelve el estado de los recursos externos linkeados. Si es
+	// nil, linkear por URL deja de funcionar pero el resto del manager anda
+	// igual: la integración es opcional y no puede tumbar las sesiones.
+	Resources *resources.Cache
 }
 
 // Manager es el dueño de los ptys vivos. Es la única capa que compone
@@ -553,4 +560,84 @@ func (m *Manager) lookup(id string) *liveSession {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.live[id]
+}
+
+// ErrUnknownResource se re-exporta para que el servidor traduzca el error a un
+// status sin tener que importar el paquete resources.
+var ErrUnknownResource = resources.ErrUnknownResource
+
+// LinkedResource es un recurso linkeado junto con su estado actual.
+type LinkedResource struct {
+	*store.Resource
+	Snapshot *resources.Snapshot `json:"snapshot,omitempty"`
+}
+
+// ListResources devuelve los recursos de la sesión con su estado. El estado
+// sale del caché, así que el polling del frontend no se traduce uno a uno en
+// llamadas al sistema externo.
+func (m *Manager) ListResources(ctx context.Context, sessionID string) ([]*LinkedResource, error) {
+	if _, err := m.st.GetSession(sessionID); err != nil {
+		return nil, err
+	}
+	rows, err := m.st.ListResources(sessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]*LinkedResource, 0, len(rows))
+	for _, r := range rows {
+		lr := &LinkedResource{Resource: r}
+		if m.cfg.Resources != nil {
+			lr.Snapshot = m.cfg.Resources.Get(ctx, resources.Ref{
+				System: r.System, Type: r.Type, URL: r.Ref,
+			})
+		}
+		out = append(out, lr)
+	}
+	return out, nil
+}
+
+// AddResource linkea un recurso a la sesión.
+//
+// system y type se infieren del propio link: es mejor UX —pegás la URL y
+// listo— y es el seam que generaliza, porque sumar otro sistema es sumar un
+// provider al registry sin tocar este contrato. Se aceptan explícitos como
+// escape hatch para un formato que el registry todavía no conozca.
+func (m *Manager) AddResource(sessionID, rawURL, system, typ string) (*store.Resource, error) {
+	if _, err := m.st.GetSession(sessionID); err != nil {
+		return nil, err
+	}
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return nil, ErrUnknownResource
+	}
+
+	ref := resources.Ref{System: system, Type: typ, URL: rawURL}
+	if system == "" || typ == "" {
+		if m.cfg.Resources == nil {
+			return nil, ErrUnknownResource
+		}
+		resolved, ok := m.cfg.Resources.Resolve(rawURL)
+		if !ok {
+			return nil, ErrUnknownResource
+		}
+		ref = resolved
+	}
+
+	r := &store.Resource{
+		SessionID: sessionID, System: ref.System, Type: ref.Type, Ref: ref.URL,
+	}
+	if err := m.st.AddResource(r); err != nil {
+		return nil, err
+	}
+	log.Printf("[%s] recurso linkeado: %s", sessionID, r.Ref)
+	return r, nil
+}
+
+// DeleteResource desvincula el recurso de la sesión.
+func (m *Manager) DeleteResource(sessionID string, id int64) error {
+	if _, err := m.st.GetSession(sessionID); err != nil {
+		return err
+	}
+	return m.st.DeleteResource(sessionID, id)
 }
