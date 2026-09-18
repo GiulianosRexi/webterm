@@ -133,16 +133,37 @@ func (s *Server) logURLs() {
 	}
 }
 
+// handleHealth dice qué ve este proceso, incluido "no veo al daemon".
+//
+// Cuando el daemon no contesta, el campo sessions NO viene: antes venía en 0 y
+// eso era mentira —/api/sessions seguía listando sesiones running— y encima era
+// la mentira más cara, porque con el daemon caído este endpoint es la única
+// señal de que algo pasó. Omitirlo, en vez de mandar un 0 o un -1, obliga a
+// quien consume a distinguir "no hay sesiones" de "no sé cuántas hay".
+//
+// Sigue respondiendo 200: el orquestador está sano y contestando: lo que está
+// degradado es lo que ve. Un 503 acá haría que un healthcheck lo reiniciara,
+// que es exactamente lo contrario de lo que M10 quiere.
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	live := 0
-	if s.mgr != nil {
-		live = s.mgr.LiveCount()
+	body := map[string]any{
+		"status": "ok",
+		"auth":   s.cfg.Token != "",
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status":   "ok",
-		"auth":     s.cfg.Token != "",
-		"sessions": live,
-	})
+	if s.mgr == nil {
+		writeJSON(w, http.StatusOK, body)
+		return
+	}
+	live, err := s.mgr.LiveCount()
+	if err != nil {
+		body["status"] = "degraded"
+		body["daemon"] = "unreachable"
+		body["daemon_error"] = err.Error()
+		writeJSON(w, http.StatusOK, body)
+		return
+	}
+	body["daemon"] = "ok"
+	body["sessions"] = live
+	writeJSON(w, http.StatusOK, body)
 }
 
 // handleUnknownAPI responde 404 en JSON para rutas de API inexistentes.

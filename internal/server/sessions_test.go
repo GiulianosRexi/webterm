@@ -3,6 +3,8 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -12,6 +14,7 @@ import (
 
 	"github.com/giuliano/webterm/internal/control"
 	webmcp "github.com/giuliano/webterm/internal/mcp"
+	"github.com/giuliano/webterm/internal/ptyapi"
 	"github.com/giuliano/webterm/internal/resources"
 	"github.com/giuliano/webterm/internal/session"
 	"github.com/giuliano/webterm/internal/store"
@@ -236,23 +239,123 @@ func TestHealthCuentaSesiones(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("health = %d: %s", status, body)
 	}
-	var h struct {
-		Status   string `json:"status"`
-		Auth     bool   `json:"auth"`
-		Sessions int    `json:"sessions"`
-	}
+	var h healthResp
 	if err := json.Unmarshal(body, &h); err != nil {
 		t.Fatalf("decodificando health: %v", err)
 	}
-	if h.Status != "ok" || h.Sessions != 0 {
+	if h.Status != "ok" || h.Daemon != "ok" || h.Sessions == nil || *h.Sessions != 0 {
 		t.Fatalf("health = %s", body)
 	}
 
 	createSession(t, srv)
 	_, body = do(t, srv, "GET", "/api/health", "")
 	_ = json.Unmarshal(body, &h)
-	if h.Sessions != 1 {
-		t.Fatalf("sessions = %d: %s", h.Sessions, body)
+	if h.Sessions == nil || *h.Sessions != 1 {
+		t.Fatalf("sessions = %v: %s", h.Sessions, body)
+	}
+}
+
+// Con el daemon caído, /api/health tiene que decirlo en vez de contestar
+// "sessions: 0".
+//
+// Es el I4 del review final: LiveCount se comía el error del transporte, así
+// que este endpoint afirmaba cero sesiones mientras /api/sessions listaba una
+// running. Dos endpoints del mismo proceso contradiciéndose, y encima con el
+// daemon caído este es la única señal de que algo pasó.
+//
+// El campo sessions se omite y no viene en 0: "no sé cuántas hay" no es "no
+// hay ninguna", y omitirlo obliga a quien consume a distinguirlos.
+func TestHealthAvisaCuandoElDaemonNoContesta(t *testing.T) {
+	srv := newTestServerConDaemonCaido(t)
+
+	status, body := do(t, srv, "GET", "/api/health", "")
+	// Sigue siendo 200: el orquestador está sano, lo que está degradado es lo
+	// que ve. Un 503 acá haría que un healthcheck lo reiniciara, que es lo
+	// contrario de lo que M10 quiere.
+	if status != http.StatusOK {
+		t.Fatalf("health = %d: %s", status, body)
+	}
+	var h healthResp
+	if err := json.Unmarshal(body, &h); err != nil {
+		t.Fatalf("decodificando health: %v", err)
+	}
+	if h.Daemon != "unreachable" || h.Status != "degraded" {
+		t.Fatalf("health no avisa que el daemon no contesta: %s", body)
+	}
+	if h.Sessions != nil {
+		t.Fatalf("health afirma %d sesiones sin poder consultar al daemon: %s", *h.Sessions, body)
+	}
+	if h.DaemonError == "" {
+		t.Fatalf("health no dice qué pasó: %s", body)
+	}
+}
+
+type healthResp struct {
+	Status      string `json:"status"`
+	Auth        bool   `json:"auth"`
+	Daemon      string `json:"daemon"`
+	DaemonError string `json:"daemon_error"`
+	// Puntero para poder distinguir "cero sesiones" de "el campo no vino".
+	Sessions *int `json:"sessions"`
+}
+
+// newTestServerConDaemonCaido arma el orquestador contra un dueño de ptys que
+// no contesta, que es lo que ve el proceso cuando al daemon lo mataron con
+// kill -9.
+func newTestServerConDaemonCaido(t *testing.T) *httptest.Server {
+	t.Helper()
+	st, err := store.Open(filepath.Join(t.TempDir(), "webterm.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	mgr := control.NewManager(st, ptyCaido{}, control.Config{SweepEvery: time.Hour})
+	t.Cleanup(func() { _ = mgr.Close() })
+
+	srv := httptest.NewServer(New(Config{}, mgr).Handler())
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// ptyCaido falla todo con un error de transporte: uno común y silvestre, que no
+// es ninguno de los del contrato de ptyapi. Ese es el punto.
+type ptyCaido struct{}
+
+var errSocketMuerto = errors.New("dial unix /tmp/webterm.sock: connect: connection refused")
+
+func (ptyCaido) Spawn(ptyapi.SpawnOpts) error { return errSocketMuerto }
+func (ptyCaido) Attach(string) (ptyapi.Attachment, error) {
+	return nil, errSocketMuerto
+}
+func (ptyCaido) Kill(string) error          { return errSocketMuerto }
+func (ptyCaido) LiveIDs() ([]string, error) { return nil, errSocketMuerto }
+func (ptyCaido) StartedAt() int64           { return 0 }
+func (ptyCaido) Close() error               { return nil }
+
+// La carrera de dos restarts concurrentes la frena el spawnMu del daemon, que
+// contesta ptyapi.ErrAlreadyLive. Sin esa rama en writeError salía 500 —"se
+// rompió algo"— en vez de 409 —"llegaste segundo"—, que es el M1 del review
+// final. Se prueba sobre writeError y no sobre el endpoint porque provocar la
+// carrera de verdad requeriría sincronizar dos spawns adentro del daemon.
+func TestWriteErrorMapeaLosErroresDelContrato(t *testing.T) {
+	casos := []struct {
+		err  error
+		want int
+	}{
+		{store.ErrNotFound, http.StatusNotFound},
+		{control.ErrAlreadyRunning, http.StatusConflict},
+		{ptyapi.ErrNotLive, http.StatusConflict},
+		{ptyapi.ErrAlreadyLive, http.StatusConflict},
+		{ptyapi.ErrClosed, http.StatusServiceUnavailable},
+		{errSocketMuerto, http.StatusInternalServerError},
+	}
+	for _, c := range casos {
+		rec := httptest.NewRecorder()
+		writeError(rec, fmt.Errorf("envuelto: %w", c.err))
+		if rec.Code != c.want {
+			t.Errorf("%v dio %d; quería %d", c.err, rec.Code, c.want)
+		}
 	}
 }
 

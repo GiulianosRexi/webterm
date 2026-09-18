@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -107,7 +108,7 @@ func TestSweepNoPisaElMotivoDeUnaFilaYaMarcada(t *testing.T) {
 	}
 
 	// La sesión muere justo en la ventana entre las dos lecturas del sweep:
-	// entró en ActiveIDs viva y sale de LiveIDs muerta, con su motivo real ya
+	// entró en ActiveSessions viva y sale de LiveIDs muerta, con su motivo real ya
 	// escrito por el reap. Reproducido con un hook y no con timing.
 	hook.onLiveIDs = func() {
 		hook.onLiveIDs = nil
@@ -223,6 +224,136 @@ func TestSweepFechaContraElDaemonDeAhoraYNoContraElDelArranque(t *testing.T) {
 		t.Fatalf("exit_reason = %q; se la llevó un daemon restart, no la deriva", got.ExitReason)
 	}
 }
+
+// El sweep no puede matar en la base una sesión que está naciendo.
+//
+// La secuencia es la del I1 del review final. Create inserta la fila en
+// starting y recién entonces le pide el pty al daemon, que es un viaje por el
+// socket más un fork/exec: decenas de milisegundos. Si el sweep corre en esa
+// ventana ve la fila en ActiveSessions —starting cuenta como activo— y NO la ve
+// en LiveIDs, porque el pty todavía no se registró. Para cuando va a marcarla,
+// el spawn ya terminó: la fila dice running y hay un pty vivo detrás, y el
+// sweep la mata igual.
+//
+// El resultado no se autorrepara: la fila dice exited, así que el attach cae a
+// solo lectura, pero Restart consulta LiveIDs, la ve viva y devuelve 409 sobre
+// una fila terminada. La única salida es Delete.
+//
+// El comentario largo del Sweep razonaba sobre el hermano de este caso —una
+// fila que todavía no se insertó, que no está en ActiveSessions pero sí en
+// LiveIDs, y cuyo peor caso es no barrer una fila que ya está bien—. Ese
+// razonamiento era correcto cuando se escribió; el estado starting, agregado
+// después, rompió su premisa.
+func TestSweepNoMataUnaSesionQueEstaNaciendo(t *testing.T) {
+	st := newTestStore(t)
+	pty := newSlowSpawnOwner(st)
+	m := NewManager(st, pty, Config{Shell: "/bin/sh"})
+	t.Cleanup(func() {
+		_ = m.Close()
+		_ = st.Close()
+	})
+
+	created := make(chan error, 1)
+	go func() {
+		_, err := m.Create(CreateOpts{Cwd: t.TempDir()})
+		created <- err
+	}()
+
+	// La fila ya está insertada en starting y el "fork" está en curso: es
+	// exactamente la ventana donde el sweep se equivoca.
+	<-pty.spawning
+
+	n := m.Sweep()
+
+	if err := <-created; err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	got, err := st.GetSession(pty.spawnedID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// El estado primero: es la propiedad que este test nombra.
+	if got.PtyStatus != store.StatusRunning {
+		t.Fatalf("la fila quedó %s/%s con el pty vivo detrás: el sweep mató una sesión que estaba naciendo",
+			got.PtyStatus, got.ExitReason)
+	}
+	if n != 0 {
+		t.Fatalf("el sweep corrigió %d filas; quería 0", n)
+	}
+}
+
+// slowSpawnOwner modela lo único que importa del daemon para este test: que
+// spawnear tarda, y que el resultado de LiveIDs es una foto sacada ANTES de
+// que la respuesta termine de viajar.
+//
+// No hay ptys de verdad adentro: la fila la marca running él mismo, igual que
+// hace session.Manager.Spawn, y "vivo" es una entrada en un mapa.
+type slowSpawnOwner struct {
+	ptyapi.Client
+	st *store.Store
+
+	spawning  chan struct{} // se cierra cuando Spawn empezó y está por trabarse
+	proceed   chan struct{} // libera al Spawn trabado
+	spawned   chan struct{} // se cierra cuando el spawn terminó de verdad
+	spawnedID string        // seguro de leer después de <-spawned
+
+	releaseOnce sync.Once
+
+	mu   sync.Mutex
+	live map[string]bool
+}
+
+func newSlowSpawnOwner(st *store.Store) *slowSpawnOwner {
+	return &slowSpawnOwner{
+		st:       st,
+		spawning: make(chan struct{}),
+		proceed:  make(chan struct{}),
+		spawned:  make(chan struct{}),
+		live:     map[string]bool{},
+	}
+}
+
+func (f *slowSpawnOwner) Spawn(o ptyapi.SpawnOpts) error {
+	f.spawnedID = o.ID
+	close(f.spawning)
+	<-f.proceed
+	// El fork/exec tarda. La espera acá no es para sincronizar nada —eso lo
+	// hacen los canales— sino para que el MarkRunning caiga en un milisegundo
+	// distinto al del insert, que es lo que le da algo que comparar a la
+	// guarda del sweep. En producción el viaje por el socket la paga sola.
+	time.Sleep(2 * time.Millisecond)
+	if err := f.st.MarkRunning(o.ID, o.Cols, o.Rows); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	f.live[o.ID] = true
+	f.mu.Unlock()
+	close(f.spawned)
+	return nil
+}
+
+// LiveIDs saca la foto, deja terminar el spawn y recién entonces contesta. Es
+// la latencia de la respuesta viajando por el socket: lo que el sweep recibe
+// describe un instante ya pasado.
+func (f *slowSpawnOwner) LiveIDs() ([]string, error) {
+	f.mu.Lock()
+	ids := make([]string, 0, len(f.live))
+	for id := range f.live {
+		ids = append(ids, id)
+	}
+	f.mu.Unlock()
+
+	select {
+	case <-f.spawning:
+		f.releaseOnce.Do(func() { close(f.proceed) })
+		<-f.spawned
+	default:
+	}
+	return ids, nil
+}
+
+func (f *slowSpawnOwner) StartedAt() int64 { return 0 }
+func (f *slowSpawnOwner) Close() error     { return nil }
 
 // fakeOwner es un dueño de ptys sin ptys: contesta cuándo arrancó y que no
 // tiene nada vivo, que es todo lo que el sweep consulta. Los demás métodos los
@@ -549,4 +680,206 @@ func TestFinDeStreamConLaSesionViva(t *testing.T) {
 	if end.Session == nil || end.Session.PtyStatus != store.StatusRunning {
 		t.Fatalf("la fila tendría que seguir en running: %+v", end.Session)
 	}
+}
+
+// Con el daemon caído se tiene que poder leer el historial igual.
+//
+// Es el I3(a) del review final: control.Attach caía a solo lectura solo ante
+// ptyapi.ErrNotLive, y un error de transporte no lo es, así que
+// GET /ws/terminal sobre una sesión huérfana devolvía 500. Mirar qué pasó en
+// una sesión es exactamente lo que uno quiere hacer cuando algo se cayó, y el
+// historial vive en la base, que es del orquestador: que el daemon no esté no
+// nos impide leerlo.
+func TestAttachConElDaemonCaidoCaeASoloLectura(t *testing.T) {
+	st := newTestStore(t)
+	pty := session.NewManager(st, session.Config{HistoryBytes: 64 << 10})
+	dead := &deadOwner{Client: pty}
+	m := NewManager(st, dead, Config{Shell: "/bin/sh"})
+	t.Cleanup(func() {
+		_ = m.Close()
+		_ = pty.Close()
+		_ = st.Close()
+	})
+
+	rec, err := m.Create(CreateOpts{Cwd: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	att, err := m.Attach(rec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := att.Write([]byte("echo MARCA-PREVIA\n")); err != nil {
+		t.Fatal(err)
+	}
+	waitForOutput(t, att, "MARCA-PREVIA")
+	att.Detach()
+	// El historial se baja a disco batcheado; sin esto la base puede no tener
+	// todavía lo que el stream ya mostró.
+	waitForHistory(t, st, rec.ID, "MARCA-PREVIA")
+
+	// El daemon se cae. La fila sigue diciendo running, que es justamente el
+	// estado en el que esto fallaba.
+	dead.down.Store(true)
+
+	off, err := m.Attach(rec.ID)
+	if err != nil {
+		t.Fatalf("con el daemon caído tendría que poder leerse el historial: %v", err)
+	}
+	defer off.Detach()
+	if off.Live {
+		t.Fatal("Live = true con el daemon caído")
+	}
+	if !bytes.Contains(off.History, []byte("MARCA-PREVIA")) {
+		t.Fatalf("el historial no llegó: %q", off.History)
+	}
+}
+
+// Un daemon caído no se arregla solo: el sweep tiene que pedir que lo levanten.
+//
+// Es el I3(b). Antes, ensureDaemon corría una sola vez al arrancar el
+// orquestador y no había ningún camino de reconexión: con el daemon muerto, la
+// UI mostraba sesiones running para siempre y POST /api/sessions daba 500 hasta
+// que reiniciaras el orquestador a mano.
+func TestSweepPideLevantarElDaemonCaido(t *testing.T) {
+	st := newTestStore(t)
+	dead := &deadOwner{Client: &fakeOwner{}}
+	dead.down.Store(true)
+
+	llamadas := 0
+	m := NewManager(st, dead, Config{Shell: "/bin/sh", EnsureDaemon: func() error {
+		llamadas++
+		return nil
+	}})
+	t.Cleanup(func() {
+		_ = m.Close()
+		_ = st.Close()
+	})
+
+	rec := &store.Session{
+		ID: store.NewID(), Cwd: t.TempDir(), Shell: "/bin/sh",
+		Cols: 80, Rows: 24, PtyStatus: store.StatusRunning,
+	}
+	if err := st.CreateSession(rec); err != nil {
+		t.Fatal(err)
+	}
+
+	if n := m.Sweep(); n != 0 {
+		t.Fatalf("el sweep corrigió %d filas sin poder consultar al daemon; tiene que corregir 0", n)
+	}
+	if llamadas != 1 {
+		t.Fatalf("EnsureDaemon se llamó %d veces; quería exactamente 1 por barrido", llamadas)
+	}
+	// Y no inventa: sin saber qué hay vivo, la fila queda como estaba.
+	got, _ := st.GetSession(rec.ID)
+	if got.PtyStatus != store.StatusRunning {
+		t.Fatalf("la fila quedó %s; sin daemon no se puede afirmar nada", got.PtyStatus)
+	}
+}
+
+// Y sin callback —que es como lo construyen todos los tests y como puede
+// construirlo cualquiera— el sweep tiene que seguir andando igual.
+func TestSweepConEnsureDaemonNilNoExplota(t *testing.T) {
+	st := newTestStore(t)
+	dead := &deadOwner{Client: &fakeOwner{}}
+	dead.down.Store(true)
+	m := NewManager(st, dead, Config{Shell: "/bin/sh"})
+	t.Cleanup(func() {
+		_ = m.Close()
+		_ = st.Close()
+	})
+	if n := m.Sweep(); n != 0 {
+		t.Fatalf("el sweep corrigió %d filas; quería 0", n)
+	}
+}
+
+// LiveCount deja ver el error del transporte en vez de devolver 0.
+//
+// Es el I4: con el daemon caído, /api/health decía "sessions: 0" mientras
+// /api/sessions listaba una running. Dos endpoints del mismo proceso
+// contradiciéndose, justo cuando ese endpoint es la única señal de que algo
+// pasó.
+func TestLiveCountNoSeComeElErrorDelDaemon(t *testing.T) {
+	st := newTestStore(t)
+	dead := &deadOwner{Client: &fakeOwner{}}
+	m := NewManager(st, dead, Config{Shell: "/bin/sh"})
+	t.Cleanup(func() {
+		_ = m.Close()
+		_ = st.Close()
+	})
+
+	if n, err := m.LiveCount(); err != nil || n != 0 {
+		t.Fatalf("con el daemon vivo: n=%d err=%v", n, err)
+	}
+	dead.down.Store(true)
+	if _, err := m.LiveCount(); err == nil {
+		t.Fatal("con el daemon caído, LiveCount devolvió un número como si supiera")
+	}
+}
+
+// deadOwner es un dueño de ptys al que se le puede cortar el socket: con down
+// prendido, todo falla con un error de transporte, que es lo que ve el
+// orquestador cuando al daemon lo mataron con kill -9.
+type deadOwner struct {
+	ptyapi.Client
+	down atomic.Bool
+}
+
+// errDaemonCaido imita lo que devuelve el daemonclient con el socket muerto: un
+// error común y silvestre, que NO es ninguno de los del contrato. Ese es todo
+// el punto: el orquestador no puede reconocerlo con un errors.Is.
+var errDaemonCaido = errors.New("dial unix /tmp/webterm.sock: connect: connection refused")
+
+func (d *deadOwner) Spawn(o ptyapi.SpawnOpts) error {
+	if d.down.Load() {
+		return errDaemonCaido
+	}
+	return d.Client.Spawn(o)
+}
+
+func (d *deadOwner) Attach(id string) (ptyapi.Attachment, error) {
+	if d.down.Load() {
+		return nil, errDaemonCaido
+	}
+	return d.Client.Attach(id)
+}
+
+func (d *deadOwner) Kill(id string) error {
+	if d.down.Load() {
+		return errDaemonCaido
+	}
+	return d.Client.Kill(id)
+}
+
+func (d *deadOwner) LiveIDs() ([]string, error) {
+	if d.down.Load() {
+		return nil, errDaemonCaido
+	}
+	return d.Client.LiveIDs()
+}
+
+func (d *deadOwner) StartedAt() int64 {
+	if d.down.Load() {
+		return 0
+	}
+	return d.Client.StartedAt()
+}
+
+func (d *deadOwner) Close() error { return d.Client.Close() }
+
+// waitForHistory espera a que el historial batcheado llegue a la base.
+func waitForHistory(t *testing.T, st *store.Store, id, mark string) {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		hist, err := st.ReadOutput(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.Contains(hist, []byte(mark)) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("el historial nunca llegó a la base con %q", mark)
 }

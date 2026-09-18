@@ -44,6 +44,13 @@ func writeError(w http.ResponseWriter, err error) {
 		writeErrorMsg(w, http.StatusConflict, "la sesión ya está corriendo")
 	case errors.Is(err, ptyapi.ErrNotLive):
 		writeErrorMsg(w, http.StatusConflict, "la sesión no está corriendo")
+	case errors.Is(err, ptyapi.ErrAlreadyLive):
+		// Es el mismo 409 que ErrAlreadyRunning pero llega por otro camino: el
+		// chequeo de LiveIDs de control.Restart no es atómico, así que dos
+		// restarts concurrentes lo pasan los dos y al segundo lo frena recién
+		// el spawnMu del daemon, con este error. Sin esta rama salía 500, o sea
+		// "se rompió algo" en vez de "llegaste segundo".
+		writeErrorMsg(w, http.StatusConflict, "la sesión ya está corriendo")
 	case errors.Is(err, ptyapi.ErrClosed):
 		// 503 y no 500: el dueño de los ptys se está apagando, no que algo
 		// esté roto. Reintentar contra el daemon que vuelve es razonable, a

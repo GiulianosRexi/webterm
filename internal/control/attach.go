@@ -125,17 +125,27 @@ func (m *Manager) Attach(id string) (*Attachment, error) {
 	}
 
 	inner, err := m.pty.Attach(id)
-	if errors.Is(err, ptyapi.ErrNotLive) {
-		// La fila estaba desactualizada: el pty murió y el reap del daemon
-		// todavía no la había marcado. No es un error, es el mismo camino de
-		// solo lectura al que hubiéramos ido con la fila al día.
+	if err != nil {
+		// Cualquier error de acá cae al camino de solo lectura, no solo
+		// ErrNotLive.
+		//
+		// Con ErrNotLive es porque la fila estaba desactualizada: el pty murió
+		// y el reap del daemon todavía no la había marcado. No es un error, es
+		// el mismo camino al que hubiéramos ido con la fila al día, y por eso
+		// no se loguea.
+		//
+		// Con un error de transporte —el daemon se cayó— antes devolvíamos 500
+		// y no se podía ni mirar el historial de una sesión, que es exactamente
+		// lo que uno quiere hacer cuando algo se cayó. El historial vive en la
+		// base, que es nuestra: que el daemon no esté no nos impide leerlo. Se
+		// pierde el stream vivo, pero el stream vivo ya no existe.
+		if !errors.Is(err, ptyapi.ErrNotLive) {
+			log.Printf("[%s] el dueño de los ptys no contestó; se attachea en solo lectura: %v", id, err)
+		}
 		if fresh, ferr := m.st.GetSession(id); ferr == nil {
 			rec = fresh
 		}
 		return m.readOnly(rec)
-	}
-	if err != nil {
-		return nil, err
 	}
 
 	if terr := m.st.TouchActive(id); terr != nil {

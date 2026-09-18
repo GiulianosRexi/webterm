@@ -238,6 +238,21 @@ func runOrchestrator() {
 	// pregunta al dueño de los ptys en cada barrido (ptyapi.Client.StartedAt).
 	// Cachearlo acá mentía apenas corrías `webterm daemon restart` sin
 	// reiniciar el orquestador, que es justo lo que hace `make daemon-restart`.
+	//
+	// EnsureDaemon es cómo el sweep se recupera de un daemon caído. Vive acá y
+	// no en control porque spawnear el binario propio es capacidad de esta
+	// capa: control no sabe de os.Executable ni de flags.
+	ctl.EnsureDaemon = func() error {
+		cl, err := ensureDaemon(paths, dbPath, historyBytes)
+		if err != nil {
+			return err
+		}
+		// El cliente que ya tiene el manager redisca el socket en cada llamada,
+		// así que el daemon nuevo le sirve tal cual y este cliente de más solo
+		// servía para esperar a que contestara. Se cierra enseguida: dejarlo
+		// vivo acumularía un transport por cada caída.
+		return cl.Close()
+	}
 	mgr := control.NewManager(st, pty, ctl)
 	cfg.MCP = webmcp.New(mgr).Handler()
 

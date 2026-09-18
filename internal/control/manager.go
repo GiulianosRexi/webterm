@@ -48,6 +48,19 @@ type Config struct {
 	ExtraEnv []string
 	// SweepEvery es cada cuánto corre la verificación de invariante.
 	SweepEvery time.Duration
+	// EnsureDaemon levanta el dueño de los ptys si se cayó. El sweep lo llama
+	// cuando LiveIDs falla por transporte.
+	//
+	// Es un callback y no un método de ptyapi.Client porque no es algo que el
+	// dueño de los ptys pueda contestar de sí mismo: un daemon muerto no habla,
+	// y spawnear un proceso desde os.Executable() es capacidad de la capa cmd.
+	// El contrato queda limpio y la única dependencia rara vive acá, opcional y
+	// nombrada.
+	//
+	// Nil es un valor válido: control tiene que andar sin esto —es como lo
+	// construyen todos los tests— y ahí un daemon caído simplemente no se
+	// levanta solo.
+	EnsureDaemon func() error
 }
 
 // Manager es el dueño del estado de las sesiones. Los ptys son de otro.
@@ -188,6 +201,18 @@ func (m *Manager) spawn(rec *store.Session, banner string) error {
 
 // Restart spawnea un pty nuevo sobre la misma fila: conserva id, título, cwd,
 // KV e historial, y sigue apendeando al mismo historial.
+//
+// OJO: la seguridad de esto ante dos Restart concurrentes NO vive acá. El
+// chequeo de LiveIDs de más abajo es una cortesía —dice 409 sin ir al daemon en
+// el caso normal— pero no es atómico: dos requests pueden pasarlo los dos.
+// Quien realmente impide el pty duplicado es el spawnMu de internal/session,
+// que serializa Spawn entero y hace que el segundo se encuentre con la sesión
+// ya en el mapa y devuelva ptyapi.ErrAlreadyLive (que el server traduce a 409).
+//
+// Es el único lugar del orquestador donde la corrección depende de un candado
+// de otro paquete —y encima de otro proceso, con el daemon aparte— así que
+// queda escrito: si alguna vez se toca el spawnMu de session, este camino es el
+// que se rompe, y se rompe sin que ningún test de control falle.
 func (m *Manager) Restart(id string, cols, rows int) (*store.Session, error) {
 	rec, err := m.st.GetSession(id)
 	if err != nil {
@@ -252,16 +277,27 @@ func (m *Manager) Delete(id string) error {
 // devuelve vacío y esto marca todo lo que había quedado activo. El
 // comportamiento viejo, derivado en vez de hardcodeado.
 //
-// El orden de las dos lecturas es OBLIGATORIO y no se puede "ordenar mejor":
-// ActiveIDs primero, LiveIDs después. No hay forma de que sean atómicas —con
-// el daemon del otro lado, LiveIDs viaja por un socket— así que siempre hay
-// una ventana entre las dos, y este orden es el que la hace inofensiva: una
-// sesión spawneada en el medio no está en ActiveIDs pero sí en LiveIDs, y el
-// peor caso es no barrer una fila que ya está bien. Al revés, esa misma sesión
-// no aparecería en LiveIDs (leído antes de que naciera) pero sí en ActiveIDs
-// (leído después), y el sweep marcaría muerta una sesión viva.
+// Hay una ventana entre las dos lecturas y no se puede cerrar: con el daemon
+// del otro lado, LiveIDs viaja por un socket, así que no hay forma de que sean
+// atómicas. Una sesión que nace en el medio cae de uno de dos lados, y los dos
+// hay que atenderlos:
+//
+//   - la fila todavía no se insertó: no está en ActiveSessions pero sí llega a
+//     estar en LiveIDs. Inofensivo: el peor caso es no barrer una fila que ya
+//     está bien. De esto se ocupa el orden ActiveSessions → LiveIDs, que por eso
+//     es OBLIGATORIO y no se puede "ordenar mejor": al revés, la misma sesión no
+//     aparecería en LiveIDs (leído antes de que naciera) pero sí en
+//     ActiveSessions (leído después).
+//   - la fila YA se insertó, en starting, y el pty todavía no se registró: está
+//     en ActiveSessions y no está en LiveIDs, o sea que este barrido la da por
+//     muerta. El orden no la salva —es el caso hermano, el que el estado
+//     starting agregó después de que se escribiera esta regla— y matarla no se
+//     autorrepara: la fila diría exited con el pty corriendo, el attach caería a
+//     solo lectura y Restart devolvería 409. De esto se ocupa el CAS de
+//     MarkExitedIfUnchanged, que compara la fila contra cómo la leímos: un
+//     spawn que termine en el medio la cambia y el UPDATE no matchea.
 func (m *Manager) Sweep() int {
-	active, err := m.st.ActiveIDs()
+	active, err := m.st.ActiveSessions()
 	if err != nil {
 		log.Printf("sweep: %v", err)
 		return 0
@@ -271,7 +307,12 @@ func (m *Manager) Sweep() int {
 	}
 	liveIDs, err := m.pty.LiveIDs()
 	if err != nil {
+		// Con el daemon caído no sabemos nada: no marcamos nada —marcar sería
+		// inventar— pero sí intentamos levantarlo, porque si no el orquestador
+		// se queda para siempre mostrando sesiones running que ya no existen y
+		// sin poder crear ninguna nueva. Ver ensureDaemon.
 		log.Printf("sweep: no se pudo consultar al daemon: %v", err)
+		m.reviveDaemon()
 		return 0
 	}
 	live := make(map[string]bool, len(liveIDs))
@@ -289,29 +330,54 @@ func (m *Manager) Sweep() int {
 	startedAt := m.pty.StartedAt()
 
 	n := 0
-	for _, id := range active {
-		if live[id] {
+	for _, prev := range active {
+		if live[prev.ID] {
 			continue
 		}
-		// La guarda del UPDATE es lo que hace inofensiva la ventana entre las
-		// dos lecturas: una sesión que murió mientras tanto ya tiene su
-		// exit_reason real —normal, killed— escrito por el reap, y este UPDATE
-		// no la toca. Sin la guarda, el sweep le pisaría el motivo con el suyo
-		// y el usuario vería un dato corrupto en la UI.
-		marked, err := m.st.MarkExitedIfActive(id, m.reasonFor(id, startedAt), nil)
+		// El CAS del UPDATE es lo que hace inofensiva la ventana entre las dos
+		// lecturas, en sus dos direcciones: una sesión que murió mientras tanto
+		// ya tiene su exit_reason real —normal, killed— escrito por el reap, y
+		// una que nació mientras tanto ya tiene pty. En los dos casos la fila
+		// cambió respecto de cómo la leímos y este UPDATE no la toca. Sin el
+		// CAS, el sweep pisaría el motivo real en el primer caso y mataría una
+		// sesión viva en el segundo.
+		marked, err := m.st.MarkExitedIfUnchanged(prev, m.reasonFor(prev.ID, startedAt), nil)
 		if err != nil {
-			log.Printf("sweep [%s]: %v", id, err)
+			log.Printf("sweep [%s]: %v", prev.ID, err)
 			continue
 		}
 		if !marked {
-			// Alguien llegó antes: la fila ya no estaba activa. Es el caso
-			// normal de la carrera, no un error.
+			// La fila cambió debajo nuestro. Es el caso normal de la carrera,
+			// no un error, y si quedó algo por barrer lo agarra el barrido que
+			// viene.
 			continue
 		}
-		log.Printf("[%s] la base la daba por activa pero el daemon no la tiene", id)
+		log.Printf("[%s] la base la daba por activa pero el daemon no la tiene", prev.ID)
 		n++
 	}
 	return n
+}
+
+// reviveDaemon intenta levantar de nuevo al dueño de los ptys.
+//
+// El callback es opcional y viene de afuera porque spawnear un proceso desde
+// os.Executable() es capacidad de la capa cmd, no algo que quepa en ptyapi: el
+// contrato es "el dueño de los ptys se describe a sí mismo", y un daemon caído
+// no puede describirse. Con EnsureDaemon en nil —como lo construyen todos los
+// tests— esto no hace nada y el sweep se comporta como antes.
+//
+// Un solo intento por barrido: si el daemon no arranca, el próximo sweep vuelve
+// a probar 30 s después. Reintentar en loop acá no arreglaría nada que el
+// intervalo no arregle y llenaría el log.
+func (m *Manager) reviveDaemon() {
+	if m.cfg.EnsureDaemon == nil {
+		return
+	}
+	if err := m.cfg.EnsureDaemon(); err != nil {
+		log.Printf("sweep: no se pudo levantar el daemon de nuevo: %v", err)
+		return
+	}
+	log.Print("sweep: el daemon volvió; el próximo barrido reconcilia las filas")
 }
 
 // reasonFor distingue las dos formas de quedar huérfana. Una sesión creada
@@ -346,12 +412,19 @@ func (m *Manager) sweepLoop() {
 }
 
 // LiveCount es cuántas sesiones tienen proceso corriendo ahora mismo.
-func (m *Manager) LiveCount() int {
+//
+// Devuelve el error en vez de comérselo: antes, un daemon que no contestaba se
+// traducía en 0, y /api/health decía "sessions: 0" mientras /api/sessions
+// listaba una running. Dos endpoints del mismo proceso contradiciéndose, y
+// justo en el momento en que ese endpoint es la única señal de que algo pasó.
+// Con error != nil el número no significa nada y quien llama tiene que decirlo
+// así.
+func (m *Manager) LiveCount() (int, error) {
 	ids, err := m.pty.LiveIDs()
 	if err != nil {
-		return 0
+		return 0, err
 	}
-	return len(ids)
+	return len(ids), nil
 }
 
 // A partir de acá, todo se resuelve contra la base sin tocar al daemon. Es la
