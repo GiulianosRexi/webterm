@@ -88,3 +88,24 @@ type Client interface {
 	// Close suelta los recursos del cliente. No mata las sesiones remotas.
 	Close() error
 }
+
+// SanitizeReplay prepara un tail de historial para un cliente nuevo.
+//
+// El historial está cortado en el cap, así que puede empezar en medio de un
+// carácter UTF-8 y arrastrar atributos de color abiertos antes del corte: sin
+// esto, el primer renglón del replay sale con basura y con el color de algo
+// que el cliente nunca vio empezar.
+//
+// Vive en el contrato porque la necesitan las dos puntas: quien tiene los ptys
+// para el tail del ring, y el orquestador para el historial de una sesión
+// muerta que lee de la base. Es una función pura, así que tenerla acá no le
+// mete dependencias a nadie.
+func SanitizeReplay(p []byte) []byte {
+	for len(p) > 0 && p[0]&0xC0 == 0x80 {
+		p = p[1:]
+	}
+	if len(p) == 0 {
+		return nil
+	}
+	return append([]byte("\x1b[0m"), p...)
+}

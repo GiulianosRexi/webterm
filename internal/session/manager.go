@@ -321,20 +321,7 @@ func (m *Manager) Attach(id string) (ptyapi.Attachment, error) {
 		// rompería el contrato justo donde el consumidor hace `for range`.
 		return nil, ptyapi.ErrNotLive
 	}
-	return &Attachment{m: m, live: l, history: sanitizeReplay(hist), sub: sub}, nil
-}
-
-// sanitizeReplay prepara el tail para un cliente nuevo. El historial está
-// cortado en el cap, así que puede empezar en medio de un carácter UTF-8 y
-// arrastrar atributos de color abiertos antes del corte.
-func sanitizeReplay(p []byte) []byte {
-	for len(p) > 0 && p[0]&0xC0 == 0x80 {
-		p = p[1:]
-	}
-	if len(p) == 0 {
-		return nil
-	}
-	return append([]byte("\x1b[0m"), p...)
+	return &Attachment{m: m, live: l, history: ptyapi.SanitizeReplay(hist), sub: sub}, nil
 }
 
 // Kill mata el proceso y conserva la fila y el historial. Es sincrónico: al
