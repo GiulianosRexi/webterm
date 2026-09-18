@@ -314,3 +314,25 @@ WebSocket.
 
 El diseño detallado está en
 `docs/superpowers/specs/2026-09-18-m9-servidor-mcp-design.md`.
+
+### M10 — Daemon de sesiones
+
+El backend se parte en dos procesos: un **daemon** dueño de los ptys y del
+historial, y el **orquestador** con todo lo demás (HTTP, UI, API, MCP,
+recursos, KV). Reiniciar el orquestador deja de matar las sesiones.
+
+El motivo es de desarrollo: hoy cada recompilación se lleva puestos los `claude`
+a medio trabajo, los builds y los `ssh`, así que iterar sobre WebTerm cuesta
+caro. Es la misma separación que `dockerd` / `containerd`, por el mismo motivo.
+
+El invariante que sostiene el diseño: **agregar una feature al orquestador no
+debe requerir tocar el daemon**. De ahí salen las dos decisiones grandes —base
+compartida con dueños por tabla, y un protocolo de cinco rutas sobre un socket
+Unix que reusa el mismo framing WebSocket que ya se le habla al browser.
+
+Lo que no cubre: un reboot de la máquina (eso es M6, `claude --resume`) ni un
+upgrade del propio daemon, que sigue siendo un acto explícito que mata las
+sesiones.
+
+El diseño detallado está en
+`docs/superpowers/specs/2026-09-18-m10-daemon-de-sesiones-design.md`.
