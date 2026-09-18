@@ -11,7 +11,21 @@ import (
 )
 
 // writeTimeout acota cuánto esperamos por una escritura al socket interno.
-const writeTimeout = 10 * time.Second
+//
+// Corto a propósito: el peer de este socket es el orquestador, en la misma
+// máquina. Una escritura que tarda segundos ahí no es una red lenta —es que
+// el orquestador dejó de leer (pestaña colgada del otro lado, proxy
+// trabado)—, así que no hay nada que ganar esperando de más. Cuanto antes
+// vence el deadline, antes se libera el subscriber del hub y antes se nota
+// el atasco en vez de acumular memoria en su buffer.
+const writeTimeout = 2 * time.Second
+
+// maxClientMessage acota lo que aceptamos leer del cliente en un solo frame.
+// Sin esto, gorilla bufferiza sin límite: un frame gigante (malicioso o por
+// un bug del otro lado) se comería RAM antes de llegar a att.Write. El peer
+// es confiable —socket 0600, sin red de por medio— pero acotar no cuesta
+// nada.
+const maxClientMessage = 1 << 20 // 1 MiB
 
 // upgrader del socket interno.
 //
@@ -56,6 +70,7 @@ func (s *Server) handleAttach(w http.ResponseWriter, r *http.Request) {
 		att.Detach()
 		_ = conn.Close()
 	}()
+	conn.SetReadLimit(maxClientMessage)
 
 	c := &wsWriter{conn: conn}
 
@@ -76,8 +91,27 @@ func (s *Server) handleAttach(w http.ResponseWriter, r *http.Request) {
 				break
 			}
 		}
-		// Si al cliente lo expulsamos por lento hay que decírselo: el cierre
-		// del stream solo, sin esto, se confunde con el fin de la sesión.
+		// dropped es best-effort, no una garantía. Una vez que una escritura
+		// al socket falla, gorilla deja ese error pegajoso en la conexión
+		// (prepWrite lo repite en toda escritura posterior sin tocar el
+		// cable), así que este writeJSON también va a fallar, en silencio.
+		//
+		// Eso pasa justo en el caso más probable en producción: un cliente
+		// que dejó de leer del todo (pestaña congelada, proxy trabado). Ahí
+		// la propia escritura del chunk que disparó el drop es la que ya
+		// envenenó la conexión, y el cliente termina viendo un close 1006
+		// indistinguible del fin de la sesión —la ambigüedad que este frame
+		// existe para resolver, sin resolverla en este caso.
+		//
+		// Sí llega cuando el cliente es lento pero sigue leyendo: ahí el
+		// drop lo dispara el buffer del hub (se le acumularon 256 chunks sin
+		// consumir) y no una escritura trabada, así que la conexión sigue
+		// sana y el frame sale.
+		//
+		// Por eso la señal autoritativa no puede vivir en este socket: es la
+		// fila del orquestador. Si el stream se corta y la fila dice
+		// exited, la sesión terminó; si dice running, al cliente lo
+		// expulsaron o se cayó el transporte.
 		if att.Dropped() {
 			_ = c.writeJSON(map[string]string{"type": "dropped"})
 		}
