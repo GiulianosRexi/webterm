@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/giuliano/webterm/internal/events"
 	"github.com/giuliano/webterm/internal/ptyapi"
 	"github.com/giuliano/webterm/internal/resources"
 	"github.com/giuliano/webterm/internal/store"
@@ -43,6 +44,10 @@ type Config struct {
 	// Resources resuelve el estado de los recursos externos linkeados. Si es
 	// nil, linkear por URL deja de funcionar pero el resto anda igual.
 	Resources *resources.Cache
+	// Events recibe los avisos de cambio para que el server se los reparta a
+	// los navegadores. Nil es válido y significa no publicar: es como lo
+	// construyen los tests y cualquier uso sin UI.
+	Events *events.Bus
 	// ExtraEnv son variables que se suman al entorno de cada pty. El
 	// entrypoint las arma; así el daemon no necesita saber que existe un token.
 	ExtraEnv []string
@@ -79,6 +84,15 @@ func NewManager(st *store.Store, pty ptyapi.Client, cfg Config) *Manager {
 		cfg.SweepEvery = defaultSweepInterval
 	}
 	return &Manager{st: st, pty: pty, cfg: cfg, stop: make(chan struct{})}
+}
+
+// publish avisa un cambio, si hay a quién. Concentra el chequeo de nil para
+// que los puntos de escritura sean una línea y no un if.
+func (m *Manager) publish(kind events.Kind, sessionID string) {
+	if m.cfg.Events == nil {
+		return
+	}
+	m.cfg.Events.Publish(kind, sessionID)
 }
 
 // Start hace el primer sweep y arranca la verificación periódica.
@@ -168,7 +182,12 @@ func (m *Manager) Create(o CreateOpts) (*store.Session, error) {
 	if err := m.spawn(rec, ""); err != nil {
 		return rec, err
 	}
-	return m.st.GetSession(rec.ID)
+	got, err := m.st.GetSession(rec.ID)
+	if err != nil {
+		return nil, err
+	}
+	m.publish(events.SessionCreated, got.ID)
+	return got, nil
 }
 
 // spawn le pide el pty al daemon y se asegura de que la fila no quede trabada
@@ -244,7 +263,12 @@ func (m *Manager) Restart(id string, cols, rows int) (*store.Session, error) {
 	}
 
 	log.Printf("[%s] sesión reanudada (%dx%d)", id, rec.Cols, rec.Rows)
-	return m.st.GetSession(id)
+	got, err := m.st.GetSession(id)
+	if err != nil {
+		return nil, err
+	}
+	m.publish(events.SessionUpdated, id)
+	return got, nil
 }
 
 // Kill mata el proceso y conserva la fila y el historial.
@@ -255,10 +279,16 @@ func (m *Manager) Restart(id string, cols, rows int) (*store.Session, error) {
 func (m *Manager) Kill(id string) error {
 	err := m.pty.Kill(id)
 	if errors.Is(err, ptyapi.ErrNotLive) {
+		// Ya estaba muerta: este llamado no escribió nada, así que no hay
+		// cambio de estado que avisar.
 		_, gerr := m.st.GetSession(id)
 		return gerr
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	m.publish(events.SessionUpdated, id)
+	return nil
 }
 
 // Delete mata el proceso si vive y borra la fila con su KV, sus recursos y su
@@ -267,7 +297,11 @@ func (m *Manager) Delete(id string) error {
 	if err := m.Kill(id); err != nil && !errors.Is(err, store.ErrNotFound) {
 		log.Printf("[%s] no se pudo matar antes de borrar; se borra igual: %v", id, err)
 	}
-	return m.st.DeleteSession(id)
+	if err := m.st.DeleteSession(id); err != nil {
+		return err
+	}
+	m.publish(events.SessionDeleted, id)
+	return nil
 }
 
 // Sweep marca como muertas las filas que la base cree activas y el daemon no
@@ -353,6 +387,7 @@ func (m *Manager) Sweep() int {
 			continue
 		}
 		log.Printf("[%s] la base la daba por activa pero el daemon no la tiene", prev.ID)
+		m.publish(events.SessionUpdated, prev.ID)
 		n++
 	}
 	return n
@@ -440,7 +475,12 @@ func (m *Manager) UpdateMeta(id string, p store.MetaPatch) (*store.Session, erro
 	if err := m.st.UpdateMeta(id, p); err != nil {
 		return nil, err
 	}
-	return m.st.GetSession(id)
+	got, err := m.st.GetSession(id)
+	if err != nil {
+		return nil, err
+	}
+	m.publish(events.SessionUpdated, id)
+	return got, nil
 }
 
 func (m *Manager) SetKV(id, key, value string) error {
@@ -506,6 +546,7 @@ func (m *Manager) AddResource(sessionID, rawURL, system, typ string) (*store.Res
 		return nil, err
 	}
 	log.Printf("[%s] recurso linkeado: %s", sessionID, r.Ref)
+	m.publish(events.ResourceAdded, sessionID)
 	return r, nil
 }
 
@@ -513,5 +554,9 @@ func (m *Manager) DeleteResource(sessionID string, id int64) error {
 	if _, err := m.st.GetSession(sessionID); err != nil {
 		return err
 	}
-	return m.st.DeleteResource(sessionID, id)
+	if err := m.st.DeleteResource(sessionID, id); err != nil {
+		return err
+	}
+	m.publish(events.ResourceRemoved, sessionID)
+	return nil
 }
