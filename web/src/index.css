@@ -120,8 +120,16 @@ button:hover,
   min-height: 0;
 }
 
+/* El ancho lo manda --sidebar-w (lo setea App al arrastrar el resizer), nunca
+   el contenido. min-width: 0 es lo que hace que eso sea cierto: sin él un flex
+   item usa min-width: auto, o sea el min-content de sus hijos, y el basis pasa
+   a ser un piso en vez de un ancho — un título largo, el "hace N min" o los
+   botones que aparecen en hover ensanchaban la sidebar entera. */
 .sidebar {
-  flex: 0 0 240px;
+  flex: 0 0 var(--sidebar-w, 240px);
+  width: var(--sidebar-w, 240px);
+  min-width: 0;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   background: var(--bg-chrome);
@@ -129,15 +137,80 @@ button:hover,
   min-height: 0;
 }
 
+/* Franja de arrastre entre la sidebar y el terminal. Es transparente y solo se
+   pinta al tocarla: el borde de la sidebar ya marca la división. */
+.sidebar-resizer {
+  flex: 0 0 4px;
+  cursor: col-resize;
+  background: transparent;
+  transition: background 120ms ease;
+}
+
+.sidebar-resizer:hover,
+.sidebar-resizer:active { background: var(--accent); }
+
+/* Colapsada, la franja es lo único que queda de la sidebar, así que se ensancha
+   para poder clickearla y deja de ser un resizer. */
+.sidebar-resizer.collapsed {
+  flex-basis: 14px;
+  cursor: default;
+  background: var(--bg-chrome);
+  border-right: 1px solid var(--border);
+}
+
+.sidebar-reveal {
+  width: 100%;
+  height: 100%;
+  padding: 8px 0 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--fg-dim);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  align-items: flex-start;
+  justify-content: center;
+  display: flex;
+}
+
+.sidebar-reveal:hover { color: var(--fg); background: rgba(255, 255, 255, 0.04); }
+
+/* Durante el drag el cursor no debe parpadear al pasar sobre el canvas de xterm
+   ni seleccionarse texto de las filas. */
+body.resizing { cursor: col-resize; user-select: none; }
+body.resizing .terminal-host { pointer-events: none; }
+
 .sidebar-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 6px;
   padding: 8px 10px;
   font-size: 12px;
   color: var(--fg-dim);
   border-bottom: 1px solid var(--border);
 }
+
+/* Empuja los botones a la derecha ahora que el head tiene tres hijos y ya no
+   alcanza con space-between. */
+.sidebar-head > span:first-child { flex: 1 1 auto; min-width: 0; }
+
+/* Los dos botones del head comparten caja: con "+ Nueva" el de crear medía casi
+   30px de alto contra los 20 del de colapsar y la diferencia saltaba a la vista.
+   Ahora ambos son el mismo cuadrado y solo cambia el glifo. */
+.sidebar-head button {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.sidebar-head .collapse { font-size: 11px; }
 
 .session-list {
   list-style: none;
@@ -153,14 +226,20 @@ button:hover,
   font-size: 12px;
 }
 
+/* min-height + line-height fijan el alto de la fila para que no dependa de qué
+   hijos estén visibles: los botones de acción son más altos que el texto del
+   nombre, así que al aparecer en hover estiraban la fila y corrían toda la
+   lista hacia abajo. 32px = 20px de caja de línea + los 6px de padding. */
 .session {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-height: 32px;
   padding: 6px 8px;
   border-radius: 6px;
   cursor: pointer;
   font-size: 13px;
+  line-height: 20px;
 }
 
 .session:hover { background: rgba(255, 255, 255, 0.04); }
@@ -180,16 +259,61 @@ button:hover,
    (connecting, readonly), así que el mismo color dice lo mismo acá. */
 .session .dot[data-status="starting"] { background: var(--warn); }
 
+/* container-type habilita las unidades cq* adentro: el keyframe necesita saber
+   cuánto mide el hueco disponible para calcular cuánto tiene que correrse el
+   texto, y 100cqw es exactamente eso. */
 .session .name {
   flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  container-type: inline-size;
+}
+
+.session .name-inner {
+  display: inline-block;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  vertical-align: middle;
+}
+
+/* Al hover el nombre se corre para mostrar el final y vuelve. El delay deja
+   pasar la aparición de los botones de acción, que en ese mismo instante le
+   comen ancho a la fila: sin el delay el texto arranca a moverse mientras el
+   hueco todavía se está achicando y se ve como un tirón. */
+.session:hover .name-inner {
+  /* Soltar el max-width es lo que apaga el ellipsis, y tiene que pasar recién
+     cuando el texto arranca a moverse: si se soltara ya en el hover, el "…" se
+     iría 400ms antes y el título se vería cortado al ras sin razón aparente.
+     Una transición de 0s con el mismo delay que la animación las sincroniza.
+     No se puede transicionar hacia none, de ahí el valor grande. */
+  max-width: 2000px;
+  transition: max-width 0s 400ms;
+  animation: name-scroll 4s ease-in-out 400ms infinite alternate;
+}
+
+/* 100cqw - 100% es negativo solo cuando el texto no entra; si entra, min() lo
+   deja en 0 y la animación no mueve nada. Los tramos planos en los extremos
+   dan tiempo a leer el principio y el final. */
+@keyframes name-scroll {
+  0%, 15% { transform: translateX(0); }
+  85%, 100% { transform: translateX(min(0px, calc(100cqw - 100%))); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .session:hover .name-inner {
+    max-width: 100%;
+    text-overflow: ellipsis;
+    animation: none;
+  }
 }
 
 .session .rename {
   flex: 1 1 auto;
   min-width: 0;
+  height: 20px;
+  line-height: 1;
   font: inherit;
   font-size: 13px;
   color: var(--fg);
@@ -199,14 +323,21 @@ button:hover,
   padding: 1px 4px;
 }
 
+/* Ancho fijo: si midiera su texto, pasar de "recién" a "hace 1 min" movería el
+   nombre. 70px es lo que ocupa el caso más largo ("hace 59 min") a 11px. */
 .session .when {
-  flex: 0 0 auto;
+  flex: 0 0 70px;
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
   color: var(--fg-dim);
   font-size: 11px;
 }
 
-/* Las acciones solo aparecen en la fila activa: son destructivas y no tienen
-   por qué estar a un click de distancia todo el tiempo. */
+/* El disparador del menú solo aparece en la fila activa: las acciones son
+   destructivas y no tienen por qué estar a un click de distancia todo el
+   tiempo. Ocupa 20px, contra los ~63px que ocupaban los botones sueltos, así
+   que el nombre casi no se mueve al hacer hover. */
 .session .actions {
   display: none;
   gap: 2px;
@@ -216,22 +347,64 @@ button:hover,
 .session.selected .actions { display: flex; }
 
 .session .actions button {
-  padding: 0 5px;
-  font-size: 11px;
-  line-height: 1.5;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  font-size: 13px;
+  line-height: 1;
 }
 
-.session .actions .danger:hover {
-  border-color: var(--danger);
-  color: var(--danger);
+/* Menú de acciones de la sesión. Vive en un portal sobre el body, así que no lo
+   recorta el overflow: hidden de la sidebar, y va en position: fixed con las
+   coordenadas que calcula SessionMenu. */
+.session-menu {
+  position: fixed;
+  z-index: 50;
+  padding: 4px;
+  background: var(--bg-chrome);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
 }
 
-/* Reemplaza a los botones de Matar/Reanudar mientras la sesión arranca: no
-   es clickeable a propósito, solo indica que hay que esperar. */
-.session .actions .starting-hint {
-  padding: 0 5px;
+.session-menu button {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  font-size: 12px;
+  line-height: 1;
+  text-align: left;
+}
+
+.session-menu button:hover:not(:disabled) { background: rgba(255, 255, 255, 0.06); }
+.session-menu button:disabled { opacity: 0.5; cursor: default; }
+.session-menu .danger { color: var(--danger); }
+.session-menu .danger:hover:not(:disabled) { background: rgba(226, 105, 107, 0.14); }
+
+.session-menu hr {
+  margin: 4px;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+
+/* Indica que la sesión está arrancando. Salió de .actions cuando esas pasaron a
+   ser un menú: es información de estado, no una acción, así que no tiene por
+   qué esconderse hasta que haya hover. */
+.session .starting-hint {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
   font-size: 11px;
-  line-height: 1.5;
+  line-height: 1;
   color: var(--fg-dim);
 }
 
