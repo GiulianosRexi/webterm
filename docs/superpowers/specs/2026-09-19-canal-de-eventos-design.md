@@ -23,7 +23,7 @@ No instantáneo, y es una limitación consciente:
 - **la muerte espontánea de un pty de una sesión que no se está mirando.** El
   que marca ese exit es el daemon, en `reap()` (`internal/session/manager.go:340`),
   de forma sincrónica: la fila nunca queda desactualizada, así que el sweep del
-  orquestador (`internal/control/manager.go:344`) nunca la encuentra para
+  orquestador (`internal/control/manager.go:338`) nunca la encuentra para
   marcar y por lo tanto nunca publica nada para ese caso. No es que se entere
   tarde: no se entera. El navegador se entera por el polling de 60 s que queda
   como red de seguridad —o, si es la sesión que se está mirando, al instante
@@ -153,7 +153,7 @@ el repo y montarlo excede este trabajo.
 Para levantar esto hay que reiniciar el orquestador (`make build` + restart),
 **no el daemon**. Las sesiones vivas no se ven afectadas: el sweep del
 orquestador pregunta `LiveIDs()` al daemon antes de marcar nada
-(`internal/control/manager.go:300`), así que al volver las reconoce y las deja
+(`internal/control/manager.go:347`), así que al volver las reconoce y las deja
 como están. Con el daemon caído no marca nada, por diseño.
 
 ## Riesgos

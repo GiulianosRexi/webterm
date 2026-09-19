@@ -47,7 +47,7 @@
 - Consumes: nada.
 - Produces: `events.Kind` (constantes `ResourceAdded`, `ResourceRemoved`, `SessionCreated`, `SessionUpdated`, `SessionDeleted`), `events.Event{Seq uint64; Kind Kind; SessionID string}`, `events.New(buffer int) *Bus`, `(*Bus).Publish(kind Kind, sessionID string)`, `(*Bus).Subscribe() (<-chan Event, func())`.
 
-- [ ] **Step 1: Escribir los tests que fallan**
+- [x] **Step 1: Escribir los tests que fallan**
 
 Crear `internal/events/bus_test.go`:
 
@@ -164,12 +164,12 @@ func TestSuscriptorLentoNoBloqueaYDejaHueco(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Correr los tests para verificar que fallan**
+- [x] **Step 2: Correr los tests para verificar que fallan**
 
 Run: `go test ./internal/events/`
 Expected: FAIL, no compila (`undefined: New`, `undefined: Event`).
 
-- [ ] **Step 3: Escribir la implementación**
+- [x] **Step 3: Escribir la implementación**
 
 Crear `internal/events/bus.go`:
 
@@ -266,12 +266,12 @@ func (b *Bus) Subscribe() (<-chan Event, func()) {
 }
 ```
 
-- [ ] **Step 4: Correr los tests para verificar que pasan**
+- [x] **Step 4: Correr los tests para verificar que pasan**
 
 Run: `go test ./internal/events/ -race -v`
 Expected: PASS, los cinco tests.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/events/
@@ -299,7 +299,7 @@ MSG
 - Consumes: `events.New`, `(*events.Bus).Publish`, `(*events.Bus).Subscribe`, las constantes de `events.Kind` (Task 1).
 - Produces: campo `Config.Events *events.Bus`. Nada más cambia de firma.
 
-- [ ] **Step 1: Escribir el test que falla**
+- [x] **Step 1: Escribir el test que falla**
 
 Crear `internal/control/events_test.go`:
 
@@ -422,12 +422,12 @@ func TestSinBusNoRompe(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Correr el test para verificar que falla**
+- [x] **Step 2: Correr el test para verificar que falla**
 
 Run: `go test ./internal/control/ -run 'TestAddResourcePublica|TestCreateYDeletePublican|TestUpdateMetaPublica|TestSinBusNoRompe'`
 Expected: FAIL, no compila (`unknown field Events in struct literal`).
 
-- [ ] **Step 3: Agregar el campo al Config**
+- [x] **Step 3: Agregar el campo al Config**
 
 En `internal/control/manager.go`, dentro de `type Config struct`, después del campo `Resources`:
 
@@ -444,7 +444,7 @@ Y en el bloque de imports, junto a los otros paquetes internos:
 	"github.com/giuliano/webterm/internal/events"
 ```
 
-- [ ] **Step 4: Agregar el helper de publicación**
+- [x] **Step 4: Agregar el helper de publicación**
 
 En `internal/control/manager.go`, justo después de `func NewManager(...)`:
 
@@ -459,7 +459,7 @@ func (m *Manager) publish(kind events.Kind, sessionID string) {
 }
 ```
 
-- [ ] **Step 5: Publicar en cada punto de escritura**
+- [x] **Step 5: Publicar en cada punto de escritura**
 
 En cada método, agregar la llamada **después** de que la escritura al store haya salido bien y **antes** del `return` exitoso. Un evento sobre algo que después falla deja a la UI mostrando lo que no pasó.
 
@@ -472,12 +472,12 @@ En cada método, agregar la llamada **después** de que la escritura al store ha
 - `DeleteResource`: antes del `return nil` → `m.publish(events.ResourceRemoved, sessionID)`
 - `Sweep`: adentro del loop, cada vez que `MarkExitedIfUnchanged` devuelve `marked == true` → `m.publish(events.SessionUpdated, prev.ID)`
 
-- [ ] **Step 6: Correr los tests para verificar que pasan**
+- [x] **Step 6: Correr los tests para verificar que pasan**
 
 Run: `go test ./internal/control/ -race`
 Expected: PASS, incluidos todos los tests que ya existían.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add internal/control/
@@ -507,7 +507,7 @@ MSG
 - Consumes: `events.Bus`, `(*events.Bus).Subscribe`, `events.Event` (Task 1); `control.Config.Events` (Task 2).
 - Produces: `server.Config.Events *events.Bus`, ruta `GET /api/events`.
 
-- [ ] **Step 1: Escribir el test que falla**
+- [x] **Step 1: Escribir el test que falla**
 
 Crear `internal/server/events_test.go`:
 
@@ -615,12 +615,12 @@ func TestEventsSinBusDevuelve404(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Correr el test para verificar que falla**
+- [x] **Step 2: Correr el test para verificar que falla**
 
 Run: `go test ./internal/server/ -run TestEvents`
 Expected: FAIL, no compila (`s.events undefined`, `s.handleEvents undefined`).
 
-- [ ] **Step 3: Escribir el handler**
+- [x] **Step 3: Escribir el handler**
 
 Crear `internal/server/events.go`:
 
@@ -695,7 +695,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 }
 ```
 
-- [ ] **Step 4: Enchufar el bus al Server**
+- [x] **Step 4: Enchufar el bus al Server**
 
 En `internal/server/server.go`:
 
@@ -721,12 +721,12 @@ En `internal/server/server.go`:
 	mux.HandleFunc("GET /api/events", s.handleEvents)
 ```
 
-- [ ] **Step 5: Correr los tests para verificar que pasan**
+- [x] **Step 5: Correr los tests para verificar que pasan**
 
 Run: `go test ./internal/server/ -race`
 Expected: PASS, incluidos los que ya existían.
 
-- [ ] **Step 6: Construir el bus en main.go**
+- [x] **Step 6: Construir el bus en main.go**
 
 En `cmd/webterm/main.go`:
 
@@ -741,7 +741,7 @@ En `cmd/webterm/main.go`:
 
 3. Antes de `server.New(cfg, mgr)` (:278): `cfg.Events = bus`
 
-- [ ] **Step 7: Verificar la suite entera y probar el stream a mano**
+- [x] **Step 7: Verificar la suite entera y probar el stream a mano**
 
 Run: `go test ./... && go build -o bin/webterm ./cmd/webterm`
 Expected: PASS y binario construido.
@@ -754,7 +754,7 @@ curl -N http://127.0.0.1:7788/api/events
 
 Expected: aparece `event: resync` al instante. Linkear un PR desde la UI o el MCP imprime un frame `event: resource.added`.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add internal/server/ cmd/webterm/main.go
@@ -783,7 +783,7 @@ MSG
 - Consumes: `GET /api/events` (Task 3), con `event:` igual al `kind` y `data` = `{seq, kind, session_id}`.
 - Produces: `useEvents(onEvent: (ev: ServerEvent | null) => void)` de `web/src/useEvents.ts`; prop nueva `reloadKey: number` en `ResourcePanel`.
 
-- [ ] **Step 1: Escribir el hook**
+- [x] **Step 1: Escribir el hook**
 
 Crear `web/src/useEvents.ts`:
 
@@ -863,7 +863,7 @@ export function useEvents(onEvent: (ev: ServerEvent | null) => void) {
 }
 ```
 
-- [ ] **Step 2: Consumir el hook en App**
+- [x] **Step 2: Consumir el hook en App**
 
 En `web/src/App.tsx`:
 
@@ -912,7 +912,7 @@ const POLL_MS = 60000
               <ResourcePanel key={'res-' + selected} sessionId={selected} reloadKey={resourceTick} />
 ```
 
-- [ ] **Step 3: Consumir el contador en ResourcePanel**
+- [x] **Step 3: Consumir el contador en ResourcePanel**
 
 En `web/src/ResourcePanel.tsx`:
 
@@ -947,12 +947,12 @@ export function ResourcePanel({
   }, [refresh, reloadKey])
 ```
 
-- [ ] **Step 4: Verificar que compila**
+- [x] **Step 4: Verificar que compila**
 
 Run: `npm --prefix web run build`
 Expected: `tsc -b` sin errores y build generado.
 
-- [ ] **Step 5: Verificar a mano el comportamiento**
+- [x] **Step 5: Verificar a mano el comportamiento**
 
 Con el server corriendo y la UI abierta en el navegador:
 
@@ -962,7 +962,7 @@ Con el server corriendo y la UI abierta en el navegador:
 4. En la consola del navegador, `performance.getEntriesByType('resource').filter(r => r.name.includes('/api/events'))` tiene que mostrar una sola conexión, no una por segundo.
 5. Reiniciar el server: el panel se vuelve a poblar solo cuando `EventSource` reconecta.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add web/src/useEvents.ts web/src/App.tsx web/src/ResourcePanel.tsx
@@ -982,8 +982,8 @@ MSG
 
 ## Verificación final
 
-- [ ] `go test ./... -race` en verde.
-- [ ] `npm --prefix web run build` sin errores.
-- [ ] `curl -N http://127.0.0.1:7788/api/events` muestra el resync y después los eventos.
-- [ ] Linkear por MCP se ve en la UI al instante.
-- [ ] Las sesiones que estaban corriendo antes del restart del orquestador siguen vivas y attacheables (el daemon no se tocó).
+- [x] `go test ./... -race` en verde.
+- [x] `npm --prefix web run build` sin errores.
+- [ ] `curl -N http://127.0.0.1:7788/api/events` muestra el resync y después los eventos. (pendiente: lo verifica el usuario con el server reiniciado)
+- [ ] Linkear por MCP se ve en la UI al instante. (pendiente: lo verifica el usuario con el server reiniciado)
+- [x] Las sesiones que estaban corriendo antes del restart del orquestador siguen vivas y attacheables (el daemon no se tocó).
