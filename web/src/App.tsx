@@ -75,6 +75,14 @@ export function App() {
     return () => clearInterval(t)
   }, [refresh])
 
+  // El bus nunca avisa la muerte espontánea de un pty (el daemon la escribe
+  // sincrónicamente, así que el sweep del orquestador nunca la encuentra),
+  // pero el socket de la terminal ya se entera al instante. Este efecto
+  // reusa ese aviso para refrescar la lista sin esperar los 60s del poll.
+  useEffect(() => {
+    if (state === 'exited') void refresh()
+  }, [state, refresh])
+
   useEffect(() => {
     api
       .health()

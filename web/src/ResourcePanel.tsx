@@ -11,10 +11,11 @@ import {
   IconX,
 } from './prIcons'
 
-// El refresco en vivo llega por /api/events; este poll queda de red de
-// seguridad. El backend cachea 30 s, así que tampoco se traduce uno a uno en
-// llamadas a GitHub.
-const POLL_MS = 60000
+// El refresco en vivo llega por /api/events, pero el bus nunca puede avisar
+// que cambió el estado de un PR en GitHub: eso solo se entera preguntando. 30s
+// y no más porque el backend cachea las respuestas de GitHub 30s, así que
+// bajar el poll no cuesta una sola llamada extra a GitHub.
+const POLL_MS = 30000
 
 export function ResourcePanel({
   sessionId,

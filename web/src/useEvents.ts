@@ -41,33 +41,66 @@ export function useEvents(onEvent: (ev: ServerEvent | null) => void) {
   cb.current = onEvent
 
   useEffect(() => {
-    const es = new EventSource('/api/events')
-    let lastSeq = 0
+    // El browser limita a ~6 conexiones HTTP/1.1 concurrentes por origen, y
+    // esto es por perfil, no por pestaña: cada pestaña abierta deja un
+    // EventSource permanente en ese pool, que fetch (api.ts) también usa. A
+    // partir de la sexta pestaña no queda ningún slot libre y toda la UI se
+    // congela sin error, sin que el stream ni el poll de 60s puedan
+    // recuperarla. Por eso el stream se cierra cuando la pestaña queda oculta
+    // y se reabre al volver a primer plano: así el límite es por pestañas
+    // VISIBLES, no por pestañas abiertas. Una pestaña en segundo plano se
+    // conforma con el poll de 60s. No hace falta lógica extra al reabrir:
+    // el server manda un resync apenas se conecta, que es exactamente el
+    // refetch completo que una pestaña que vuelve necesita.
+    let cleanup: (() => void) | null = null
 
-    const onResync = () => {
-      lastSeq = 0
-      cb.current(null)
-    }
+    const open = () => {
+      const es = new EventSource('/api/events')
+      let lastSeq = 0
 
-    const onKind = (e: MessageEvent) => {
-      let ev: ServerEvent
-      try {
-        ev = JSON.parse(e.data) as ServerEvent
-      } catch {
-        return
+      const onResync = () => {
+        lastSeq = 0
+        cb.current(null)
       }
-      if (lastSeq !== 0 && ev.seq !== lastSeq + 1) cb.current(null)
-      else cb.current(ev)
-      lastSeq = ev.seq
+
+      const onKind = (e: MessageEvent) => {
+        let ev: ServerEvent
+        try {
+          ev = JSON.parse(e.data) as ServerEvent
+        } catch {
+          return
+        }
+        if (lastSeq !== 0 && ev.seq !== lastSeq + 1) cb.current(null)
+        else cb.current(ev)
+        lastSeq = ev.seq
+      }
+
+      es.addEventListener('resync', onResync)
+      for (const k of KINDS) es.addEventListener(k, onKind)
+
+      return () => {
+        es.removeEventListener('resync', onResync)
+        for (const k of KINDS) es.removeEventListener(k, onKind)
+        es.close()
+      }
     }
 
-    es.addEventListener('resync', onResync)
-    for (const k of KINDS) es.addEventListener(k, onKind)
+    if (document.visibilityState === 'visible') cleanup = open()
+
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') {
+        cleanup?.()
+        cleanup = null
+      } else {
+        cleanup ??= open()
+      }
+    }
+    document.addEventListener('visibilitychange', onVisibility)
 
     return () => {
-      es.removeEventListener('resync', onResync)
-      for (const k of KINDS) es.removeEventListener(k, onKind)
-      es.close()
+      document.removeEventListener('visibilitychange', onVisibility)
+      cleanup?.()
+      cleanup = null
     }
   }, [])
 }
