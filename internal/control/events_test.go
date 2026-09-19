@@ -102,6 +102,63 @@ func TestUpdateMetaPublica(t *testing.T) {
 	waitFor(t, ch, events.SessionUpdated)
 }
 
+// El caso de Kill tiene dos ramas y solo una escribe: matar una sesión viva
+// mueve la fila (y por lo tanto publica), pero matar una que ya está muerta es
+// idempotente y no toca el store, así que no tiene que publicar de nuevo. Es
+// la rama que el propio Kill señala en su comentario y que no tenía cobertura.
+func TestKillPublicaUnaVezYNoDeNuevoSiYaEstabaMuerta(t *testing.T) {
+	m, bus := newTestManagerWithBus(t)
+	ch, stop := bus.Subscribe()
+	defer stop()
+
+	rec, err := m.Create(CreateOpts{Title: "t", Cwd: t.TempDir(), Cols: 80, Rows: 24})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	waitFor(t, ch, events.SessionCreated)
+
+	if err := m.Kill(rec.ID); err != nil {
+		t.Fatalf("Kill: %v", err)
+	}
+	if ev := waitFor(t, ch, events.SessionUpdated); ev.SessionID != rec.ID {
+		t.Fatalf("SessionID = %q, esperaba %q", ev.SessionID, rec.ID)
+	}
+
+	// La sesión ya está muerta acá: este segundo Kill es el camino
+	// ErrNotLive, no escribe nada, y por lo tanto no debería publicar.
+	if err := m.Kill(rec.ID); err != nil {
+		t.Fatalf("segundo Kill (idempotente): %v", err)
+	}
+	select {
+	case ev := <-ch:
+		t.Fatalf("evento inesperado tras el Kill idempotente: %+v", ev)
+	case <-time.After(500 * time.Millisecond):
+	}
+}
+
+func TestDeleteResourcePublica(t *testing.T) {
+	m, bus := newTestManagerWithBus(t)
+	ch, stop := bus.Subscribe()
+	defer stop()
+
+	rec, err := m.Create(CreateOpts{Title: "t", Cwd: t.TempDir(), Cols: 80, Rows: 24})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	res, err := m.AddResource(rec.ID, "https://github.com/o/r/pull/1", "github", "pr")
+	if err != nil {
+		t.Fatalf("AddResource: %v", err)
+	}
+	waitFor(t, ch, events.ResourceAdded)
+
+	if err := m.DeleteResource(rec.ID, res.ID); err != nil {
+		t.Fatalf("DeleteResource: %v", err)
+	}
+	if ev := waitFor(t, ch, events.ResourceRemoved); ev.SessionID != rec.ID {
+		t.Fatalf("SessionID = %q, esperaba %q", ev.SessionID, rec.ID)
+	}
+}
+
 // El bus es opcional: sin él el orquestador tiene que andar igual, que es como
 // lo construyen todos los tests que ya existen.
 func TestSinBusNoRompe(t *testing.T) {

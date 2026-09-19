@@ -21,11 +21,14 @@ Instantáneo, porque el server es el que lo origina:
 No instantáneo, y es una limitación consciente:
 
 - **la muerte espontánea de un pty de una sesión que no se está mirando.** El
-  que marca ese exit es el daemon (`internal/session/manager.go:340`), que es
-  otro proceso; el orquestador lo descubre en su sweep, cada 30 s
-  (`internal/control/manager.go:344`). Un bus in-process no puede enterarse
-  antes. La sesión que sí se está mirando ya se entera hoy por el WS del
-  terminal, así que el agujero es acotado.
+  que marca ese exit es el daemon, en `reap()` (`internal/session/manager.go:340`),
+  de forma sincrónica: la fila nunca queda desactualizada, así que el sweep del
+  orquestador (`internal/control/manager.go:344`) nunca la encuentra para
+  marcar y por lo tanto nunca publica nada para ese caso. No es que se entere
+  tarde: no se entera. El navegador se entera por el polling de 60 s que queda
+  como red de seguridad —o, si es la sesión que se está mirando, al instante
+  por el WS del terminal, que ya se entera hoy—, así que el agujero es acotado
+  pero real.
 
 Cerrar ese último caso pide un canal daemon → orquestador. Queda afuera: es un
 proyecto propio y obliga a tocar el daemon.
