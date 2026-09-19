@@ -59,13 +59,29 @@ func TestEventsMandaResyncAlAbrirYLuegoLosEventos(t *testing.T) {
 	}
 }
 
-// Cortar la conexión tiene que devolver el handler y soltar la suscripción: si
-// no, cada pestaña que se cierra deja una goroutine y un canal recibiendo para
-// siempre.
-func TestEventsCierraAlIrseElCliente(t *testing.T) {
+// Cortar la conexión tiene que devolver el handler: como unsubscribe está
+// diferido, que el handler vuelva ES soltar la suscripción, así que basta con
+// observar el return.
+//
+// (Antes este test publicaba 100 eventos tras cerrar la conexión y afirmaba
+// que eso no se colgaba, como prueba indirecta de que la suscripción se
+// había soltado. Eso no probaba nada: Publish es no bloqueante para
+// cualquier suscriptor, buffer lleno o no —"select { case ch <- ev: default:
+// }"—, así que esas 100 llamadas terminan en milisegundos exista o no la
+// suscripción. Borrar el defer unsubscribe() del handler no hubiera hecho
+// fallar esa versión.)
+func TestEventsHandlerVuelveAlIrseElCliente(t *testing.T) {
 	bus := events.New(8)
 	s := &Server{events: bus}
-	ts := httptest.NewServer(http.HandlerFunc(s.handleEvents))
+
+	// Envolvemos el handler para poder observar cuándo vuelve: eso es lo
+	// único que realmente demuestra que soltó la suscripción, porque
+	// unsubscribe está en un defer justo después de Subscribe.
+	handlerDone := make(chan struct{})
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.handleEvents(w, r)
+		close(handlerDone)
+	}))
 	defer ts.Close()
 
 	resp, err := http.Get(ts.URL)
@@ -76,18 +92,10 @@ func TestEventsCierraAlIrseElCliente(t *testing.T) {
 	readFrame(t, br) // resync
 	resp.Body.Close()
 
-	// Sin suscriptores vivos, publicar no puede colgarse.
-	done := make(chan struct{})
-	go func() {
-		for i := 0; i < 100; i++ {
-			bus.Publish(events.SessionUpdated, "s1")
-		}
-		close(done)
-	}()
 	select {
-	case <-done:
+	case <-handlerDone:
 	case <-time.After(2 * time.Second):
-		t.Fatal("Publish se bloqueó después de que el cliente se fue")
+		t.Fatal("el handler no volvió después de que el cliente se fue; se quedó colgado sin soltar la suscripción")
 	}
 }
 

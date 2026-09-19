@@ -40,6 +40,10 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	ch, unsubscribe := s.events.Subscribe()
 	defer unsubscribe()
 
+	// Los errores de escritura de acá para abajo se ignoran a propósito: si
+	// el cliente cortó la conexión, r.Context() se cancela enseguida y el
+	// select de abajo devuelve el handler en la próxima vuelta. No hace falta
+	// un segundo camino de error para lo mismo que ya cubre el contexto.
 	fmt.Fprint(w, "event: resync\ndata: {}\n\n")
 	flusher.Flush()
 
@@ -54,6 +58,8 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
+			// Event solo tiene campos serializables (uint64, string), así que
+			// Marshal acá nunca puede fallar; el chequeo es defensivo.
 			b, err := json.Marshal(ev)
 			if err != nil {
 				continue
