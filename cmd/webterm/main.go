@@ -20,6 +20,7 @@ import (
 	"github.com/giuliano/webterm/internal/control"
 	"github.com/giuliano/webterm/internal/daemon"
 	"github.com/giuliano/webterm/internal/daemonclient"
+	"github.com/giuliano/webterm/internal/events"
 	webmcp "github.com/giuliano/webterm/internal/mcp"
 	"github.com/giuliano/webterm/internal/resources"
 	"github.com/giuliano/webterm/internal/server"
@@ -253,8 +254,13 @@ func runOrchestrator() {
 		// vivo acumularía un transport por cada caída.
 		return cl.Close()
 	}
+	// Un solo bus para los dos: el orquestador publica, el server reparte.
+	bus := events.New(64)
+	ctl.Events = bus
+
 	mgr := control.NewManager(st, pty, ctl)
 	cfg.MCP = webmcp.New(mgr).Handler()
+	cfg.Events = bus
 
 	// Start hace el primer sweep contra el daemon. Va antes de escuchar: si
 	// no, hay una ventana en la que la API reporta vivas sesiones que el

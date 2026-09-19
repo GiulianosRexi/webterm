@@ -13,6 +13,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/giuliano/webterm/internal/control"
+	"github.com/giuliano/webterm/internal/events"
 )
 
 // Config parametriza el servidor.
@@ -22,6 +23,9 @@ type Config struct {
 	Token     string // token requerido en cada request; vacío = sin auth
 	// MCP es el handler del servidor MCP. Si es nil, /mcp no se monta.
 	MCP http.Handler
+	// Events es el bus que alimenta /api/events. Si es nil, la ruta contesta
+	// 404 y el frontend se queda con el polling.
+	Events *events.Bus
 }
 
 // Server sirve la UI y las sesiones de terminal.
@@ -29,6 +33,7 @@ type Server struct {
 	cfg      Config
 	mgr      *control.Manager
 	upgrader websocket.Upgrader
+	events   *events.Bus
 }
 
 // New construye el servidor sobre un manager de sesiones ya arrancado.
@@ -41,6 +46,7 @@ func New(cfg Config, mgr *control.Manager) *Server {
 			WriteBufferSize: 32 * 1024,
 			CheckOrigin:     sameOrigin,
 		},
+		events: cfg.Events,
 	}
 }
 
@@ -67,6 +73,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/sessions/{id}/resources/{rid}", s.handleUnlinkResource)
 
 	mux.HandleFunc("/ws/terminal", s.handleTerminal)
+	mux.HandleFunc("GET /api/events", s.handleEvents)
 
 	// El servidor MCP se monta adentro de withAuth como todo lo demás: sin
 	// eso, al levantar con run-lan cualquiera en la red podría leer y escribir
