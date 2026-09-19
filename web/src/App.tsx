@@ -3,6 +3,7 @@ import { TerminalView, type ConnState } from './TerminalView'
 import { SessionList } from './SessionList'
 import { ResourcePanel } from './ResourcePanel'
 import { api, type Session } from './api'
+import { useEvents, type ServerEvent } from './useEvents'
 
 const label: Record<ConnState, string> = {
   connecting: 'conectando…',
@@ -15,9 +16,9 @@ const label: Record<ConnState, string> = {
   starting: 'arrancando…',
 }
 
-// Cada cuánto se refresca la lista. M3 lo reemplaza por un canal de eventos,
-// que ahí se justifica con los indicadores por tab.
-const POLL_MS = 3000
+// El refresco en vivo llega por /api/events; este poll queda de red de
+// seguridad para el caso en que el stream se caiga sin que el browser lo note.
+const POLL_MS = 60000
 const LAST_SESSION_KEY = 'webterm.lastSession'
 
 export function App() {
@@ -29,6 +30,9 @@ export function App() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [auth, setAuth] = useState(false)
+  // Un contador en vez de un booleano: lo que le importa a ResourcePanel es que
+  // cambió, no qué valor tiene.
+  const [resourceTick, setResourceTick] = useState(0)
   const selectedRef = useRef(selected)
   selectedRef.current = selected
 
@@ -46,6 +50,24 @@ export function App() {
       setError(String(err))
     }
   }, [])
+
+  useEvents(
+    useCallback(
+      (ev: ServerEvent | null) => {
+        // null es resync: no sabemos qué nos perdimos, así que se refresca todo.
+        if (!ev) {
+          void refresh()
+          setResourceTick((t) => t + 1)
+          return
+        }
+        if (ev.kind.startsWith('session.')) void refresh()
+        if (ev.kind.startsWith('resource.') && ev.session_id === selectedRef.current) {
+          setResourceTick((t) => t + 1)
+        }
+      },
+      [refresh],
+    ),
+  )
 
   useEffect(() => {
     void refresh()
@@ -131,7 +153,7 @@ export function App() {
         <main className="main">
           {selected ? (
             <>
-              <ResourcePanel key={'res-' + selected} sessionId={selected} />
+              <ResourcePanel key={'res-' + selected} sessionId={selected} reloadKey={resourceTick} />
               {/* key fuerza un remount al cambiar de sesión: cada una tiene su
                   propio xterm y su propio socket. */}
               <TerminalView key={selected} sessionId={selected} onState={setState} />

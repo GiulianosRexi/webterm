@@ -11,11 +11,18 @@ import {
   IconX,
 } from './prIcons'
 
-// Cada cuánto se refresca mientras el panel está abierto. El backend cachea
-// 30 s, así que este polling no se traduce uno a uno en llamadas a GitHub.
-const POLL_MS = 15000
+// El refresco en vivo llega por /api/events; este poll queda de red de
+// seguridad. El backend cachea 30 s, así que tampoco se traduce uno a uno en
+// llamadas a GitHub.
+const POLL_MS = 60000
 
-export function ResourcePanel({ sessionId }: { sessionId: string }) {
+export function ResourcePanel({
+  sessionId,
+  reloadKey,
+}: {
+  sessionId: string
+  reloadKey: number
+}) {
   const [open, setOpen] = useState(false)
   const [items, setItems] = useState<LinkedResource[]>([])
   const [draft, setDraft] = useState('')
@@ -30,12 +37,11 @@ export function ResourcePanel({ sessionId }: { sessionId: string }) {
     }
   }, [sessionId])
 
-  // La lista se pide una vez al montar para poder mostrar el contador; el
-  // refresco periódico corre solo con el panel abierto, que es lo que evita
-  // consultar GitHub por sesiones que nadie está mirando.
+  // Corre al montar y cada vez que App avisa que hubo un evento de recursos
+  // para esta sesión.
   useEffect(() => {
     void refresh()
-  }, [refresh])
+  }, [refresh, reloadKey])
 
   useEffect(() => {
     if (!open) return
