@@ -33,7 +33,6 @@ type Server struct {
 	cfg      Config
 	mgr      *control.Manager
 	upgrader websocket.Upgrader
-	events   *events.Bus
 }
 
 // New construye el servidor sobre un manager de sesiones ya arrancado.
@@ -46,7 +45,6 @@ func New(cfg Config, mgr *control.Manager) *Server {
 			WriteBufferSize: 32 * 1024,
 			CheckOrigin:     sameOrigin,
 		},
-		events: cfg.Events,
 	}
 }
 
@@ -96,6 +94,16 @@ func (s *Server) Handler() http.Handler {
 }
 
 // ListenAndServe arranca el servidor HTTP.
+//
+// OJO si alguna vez esto pasa a un apagado prolijo con srv.Shutdown(ctx): una
+// conexión SSE de /api/events nunca queda ociosa desde el punto de vista del
+// server —siempre tiene una goroutine bloqueada en el select de handleEvents—
+// así que Shutdown no la va a considerar libre y se va a quedar esperando
+// hasta el deadline del contexto, una vez por cada pestaña conectada. Hoy
+// SIGTERM mata el proceso entero y las conexiones mueren con él, así que esto
+// no pasa, pero es por accidente: el día que se agregue un shutdown prolijo,
+// esto necesita su propio manejo (por ejemplo, cerrar el bus antes de llamar
+// a Shutdown para que los handlers se vayan solos).
 func (s *Server) ListenAndServe() error {
 	srv := &http.Server{
 		Addr:              s.cfg.Addr,

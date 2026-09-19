@@ -213,6 +213,11 @@ func (m *Manager) spawn(rec *store.Session, banner string) error {
 		code := -1
 		if merr := m.st.MarkExited(rec.ID, store.ReasonSpawnFailed, &code); merr != nil {
 			log.Printf("[%s] no se pudo registrar el spawn fallido: %v", rec.ID, merr)
+		} else {
+			// La fila cambió (starting → exited) aunque el llamador se vaya
+			// con error: publicar acá, en el único lugar que escribe este
+			// motivo de falla, cubre a Create y Restart de una sola vez.
+			m.publish(events.SessionUpdated, rec.ID)
 		}
 	}
 	return err

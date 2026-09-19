@@ -30,7 +30,7 @@ func readFrame(t *testing.T, br *bufio.Reader) string {
 
 func TestEventsMandaResyncAlAbrirYLuegoLosEventos(t *testing.T) {
 	bus := events.New(8)
-	s := &Server{events: bus}
+	s := &Server{cfg: Config{Events: bus}}
 	ts := httptest.NewServer(http.HandlerFunc(s.handleEvents))
 	defer ts.Close()
 
@@ -72,7 +72,7 @@ func TestEventsMandaResyncAlAbrirYLuegoLosEventos(t *testing.T) {
 // fallar esa versión.)
 func TestEventsHandlerVuelveAlIrseElCliente(t *testing.T) {
 	bus := events.New(8)
-	s := &Server{events: bus}
+	s := &Server{cfg: Config{Events: bus}}
 
 	// Envolvemos el handler para poder observar cuándo vuelve: eso es lo
 	// único que realmente demuestra que soltó la suscripción, porque
@@ -96,6 +96,28 @@ func TestEventsHandlerVuelveAlIrseElCliente(t *testing.T) {
 	case <-handlerDone:
 	case <-time.After(2 * time.Second):
 		t.Fatal("el handler no volvió después de que el cliente se fue; se quedó colgado sin soltar la suscripción")
+	}
+}
+
+// TestEventsRequiereAuth prueba, contra el router real (Handler(), no
+// handleEvents directo como el resto de este archivo), que /api/events está
+// atrás de withAuth igual que cualquier otra ruta de la API. Los demás tests
+// de este archivo llaman a handleEvents a mano y se saltean el router entero,
+// así que ninguno demuestra esto.
+func TestEventsRequiereAuth(t *testing.T) {
+	srv := httptest.NewServer(New(Config{Token: testToken, Events: events.New(8)}, nil).Handler())
+	t.Cleanup(srv.Close)
+
+	res, err := http.Get(srv.URL + "/api/events")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("esperaba 401, obtuve %d", res.StatusCode)
+	}
+	if ct := res.Header.Get("Content-Type"); ct == "text/event-stream" {
+		t.Fatal("se puso a streamear sin autenticar")
 	}
 }
 
