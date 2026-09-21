@@ -213,14 +213,13 @@ body.resizing .terminal-host { pointer-events: none; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
+  width: 24px;
+  height: 24px;
   padding: 0;
-  font-size: 14px;
-  line-height: 1;
+  color: var(--fg-dim);
 }
 
-.sidebar-head .collapse { font-size: 11px; }
+.sidebar-head button:hover { color: var(--fg); }
 
 .session-list {
   list-style: none;
@@ -363,9 +362,10 @@ body.resizing .terminal-host { pointer-events: none; }
   width: 20px;
   height: 20px;
   padding: 0;
-  font-size: 13px;
-  line-height: 1;
+  color: var(--fg-dim);
 }
+
+.session .actions button:hover { color: var(--fg); }
 
 /* Menú de acciones de la sesión. Vive en un portal sobre el body, así que no lo
    recorta el overflow: hidden de la sidebar, y va en position: fixed con las
@@ -413,9 +413,21 @@ body.resizing .terminal-host { pointer-events: none; }
   display: inline-flex;
   align-items: center;
   height: 20px;
-  font-size: 11px;
-  line-height: 1;
   color: var(--fg-dim);
+}
+
+/* Gira mientras la sesión arranca. Es un estado que dura milisegundos, así que
+   lo que importa es que se distinga de un ícono quieto, no la vuelta entera. */
+.session .starting-hint svg {
+  animation: girar 1s linear infinite;
+}
+
+@keyframes girar {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .session .starting-hint svg { animation: none; }
 }
 
 .main {
@@ -452,7 +464,11 @@ body.resizing .terminal-host { pointer-events: none; }
 }
 
 .resources-head:hover { color: var(--fg); }
-.resources-head .caret { width: 10px; }
+.resources-head .caret {
+  display: inline-flex;
+  align-items: center;
+  width: 14px;
+}
 
 .resources-head .count {
   background: var(--border);
@@ -689,11 +705,13 @@ body.resizing .terminal-host { pointer-events: none; }
 /* El triángulo es chico pero tiene que leerse como un triángulo: a 9px se veía
    como un punto. El ancho fijo lo mantiene alineado entre un folder abierto y
    uno cerrado, que usan glifos de distinto ancho. */
+/* El caret es un svg: se alinea con flex en vez de con line-height, que es lo
+   que hacía falta cuando era un carácter y dependía de la fuente. */
 .folder-head .caret {
-  flex: 0 0 12px;
-  font-size: 12px;
-  line-height: 1;
-  text-align: center;
+  flex: 0 0 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .folder-name {

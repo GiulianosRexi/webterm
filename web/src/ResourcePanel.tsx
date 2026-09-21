@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { ChevronDown, ChevronRight, X } from 'lucide-react'
 import { api, type LinkedResource, type PRState } from './api'
 import {
   IconCheck,
@@ -82,7 +83,9 @@ export function ResourcePanel({
   return (
     <section className="resources">
       <button className="resources-head" onClick={() => setOpen((o) => !o)}>
-        <span className="caret">{open ? '▾' : '▸'}</span>
+        <span className="caret">
+          {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        </span>
         Linkeado
         {items.length > 0 && <span className="count">{items.length}</span>}
       </button>
@@ -134,8 +137,14 @@ function ResourceCard({
             {pr ? `#${pr.number} ${pr.title}` : item.ref}
           </a>
         </div>
-        <button className="danger" onClick={onUnlink} disabled={busy} title="Deslinkear">
-          ✕
+        <button
+          className="danger"
+          onClick={onUnlink}
+          disabled={busy}
+          title="Deslinkear"
+          aria-label="Deslinkear"
+        >
+          <X size={14} />
         </button>
       </header>
 

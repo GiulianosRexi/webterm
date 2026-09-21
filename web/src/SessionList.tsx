@@ -2,6 +2,18 @@ import { Fragment, useEffect, useMemo, useState } from 'react'
 import type { Folder, Session } from './api'
 import { sessionLabel } from './session'
 import { Menu, MENU_WIDTH, type MenuItem } from './Menu'
+import {
+  ChevronDown,
+  ChevronRight,
+  LoaderCircle,
+  MoreHorizontal,
+  PanelLeftClose,
+  Plus,
+} from 'lucide-react'
+
+// Tamaño de los iconos de la sidebar. Uno solo para todos: lo que los hace
+// verse como un conjunto es que compartan caja y grosor de trazo.
+const ICON = 15
 
 // relative formatea el "hace cuánto" de la última actividad, que es lo que
 // más rápido dice cuál de todas las sesiones importa ahora.
@@ -172,7 +184,7 @@ export function SessionList({
   const itemsDeSesion = (s: Session, estado: MenuSesion): MenuItem[] => {
     if (estado.moving) {
       const items: MenuItem[] = [
-        { label: '‹ volver', onClick: () => setMenu({ ...estado, moving: false }) },
+        { label: 'Volver', onClick: () => setMenu({ ...estado, moving: false }) },
         {
           label: 'Ninguno',
           current: !s.folder_id,
@@ -290,7 +302,7 @@ export function SessionList({
       <span className="when">{relative(s.last_active_at)}</span>
       {s.pty_status === 'starting' && (
         <span className="starting-hint" title="La sesión está arrancando">
-          …
+          <LoaderCircle size={12} />
         </span>
       )}
       <span className="actions" onClick={(e) => e.stopPropagation()}>
@@ -304,7 +316,7 @@ export function SessionList({
             setMenu({ kind: 'session', id: s.id, x: r.right - MENU_WIDTH, y: r.bottom + 4 })
           }}
         >
-          ⋯
+          <MoreHorizontal size={14} />
         </button>
       </span>
     </li>
@@ -320,10 +332,15 @@ export function SessionList({
       <div className="sidebar-head">
         <span>Sesiones</span>
         <button onClick={onCreate} disabled={busy} title="Nueva sesión" aria-label="Nueva sesión">
-          +
+          <Plus size={ICON} />
         </button>
-        <button className="collapse" onClick={onCollapse} title="Ocultar la lista de sesiones">
-          ⟨
+        <button
+          className="collapse"
+          onClick={onCollapse}
+          title="Ocultar la lista de sesiones"
+          aria-label="Ocultar la lista de sesiones"
+        >
+          <PanelLeftClose size={ICON} />
         </button>
       </div>
 
@@ -345,7 +362,9 @@ export function SessionList({
                   setMenu({ kind: 'folder', id: g.folder!.id, x: e.clientX, y: e.clientY })
                 }}
               >
-                <span className="caret">{collapsed[g.key] ? '▸' : '▾'}</span>
+                <span className="caret">
+                  {collapsed[g.key] ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+                </span>
                 {editing === g.key ? (
                   <input
                     className="rename"

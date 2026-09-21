@@ -12,6 +12,7 @@ import { ResourcePanel } from './ResourcePanel'
 import { api, type Folder, type Session } from './api'
 import { useEvents, type ServerEvent } from './useEvents'
 import { CommandPalette } from './CommandPalette'
+import { PanelLeftOpen } from 'lucide-react'
 
 const label: Record<ConnState, string> = {
   connecting: 'conectando…',
@@ -303,8 +304,9 @@ export function App() {
               className="sidebar-reveal"
               onClick={() => setCollapsed(false)}
               title="Mostrar la lista de sesiones"
+              aria-label="Mostrar la lista de sesiones"
             >
-              ⟩
+              <PanelLeftOpen size={15} />
             </button>
           </div>
         ) : (
