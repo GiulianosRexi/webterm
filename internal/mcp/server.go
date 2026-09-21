@@ -35,6 +35,10 @@ type Sessions interface {
 	UpdateMeta(id string, p store.MetaPatch) (*store.Session, error)
 	AddResource(id, rawURL, system, typ string) (*store.Resource, error)
 	ListResources(ctx context.Context, id string) ([]*control.LinkedResource, error)
+	List() ([]*store.Session, error)
+	ListFolders() ([]*store.Folder, error)
+	CreateFolder(name string) (*store.Folder, error)
+	SetSessionFolder(sessionID string, folderID *string) error
 }
 
 // Server es el servidor MCP de WebTerm.

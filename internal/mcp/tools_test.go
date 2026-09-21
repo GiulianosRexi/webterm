@@ -21,6 +21,7 @@ type sessionsFalsas struct {
 	kv         map[string]map[string]string
 	links      []*control.LinkedResource
 	errAdd     error
+	folders    []*store.Folder
 }
 
 func nuevasSesiones() *sessionsFalsas {
@@ -75,6 +76,36 @@ func (f *sessionsFalsas) AddResource(id, rawURL, system, typ string) (*store.Res
 
 func (f *sessionsFalsas) ListResources(context.Context, string) ([]*control.LinkedResource, error) {
 	return f.links, nil
+}
+
+func (f *sessionsFalsas) List() ([]*store.Session, error) {
+	out := make([]*store.Session, 0, len(f.existentes))
+	for _, s := range f.existentes {
+		out = append(out, s)
+	}
+	return out, nil
+}
+
+func (f *sessionsFalsas) ListFolders() ([]*store.Folder, error) { return f.folders, nil }
+
+func (f *sessionsFalsas) CreateFolder(name string) (*store.Folder, error) {
+	for _, existente := range f.folders {
+		if strings.EqualFold(existente.Name, name) {
+			return nil, store.ErrDuplicate
+		}
+	}
+	nuevo := &store.Folder{ID: "f" + name, Name: name}
+	f.folders = append(f.folders, nuevo)
+	return nuevo, nil
+}
+
+func (f *sessionsFalsas) SetSessionFolder(sessionID string, folderID *string) error {
+	s, ok := f.existentes[sessionID]
+	if !ok {
+		return store.ErrNotFound
+	}
+	s.FolderID = folderID
+	return nil
 }
 
 // reqCon arma un CallToolRequest con el header de sesión que se quiera.
@@ -276,5 +307,97 @@ func TestSesionInexistente(t *testing.T) {
 		setContextArgs{Key: "k", Value: "v"})
 	if err == nil || !strings.Contains(err.Error(), "fantasma") {
 		t.Fatalf("el error tendría que incluir el id recibido: %v", err)
+	}
+}
+
+func TestListFoldersCuentaSesiones(t *testing.T) {
+	f := nuevasSesiones()
+	ice := &store.Folder{ID: "f1", Name: "Iceberg"}
+	f.folders = []*store.Folder{ice, {ID: "f2", Name: "webterm"}}
+	f.existentes["s1"].FolderID = &ice.ID
+	s := New(f)
+
+	res, _, err := s.listFolders(context.Background(), reqCon("s1"), listFoldersArgs{})
+	if err != nil {
+		t.Fatalf("list_folders: %v", err)
+	}
+	got := soloTexto(t, res)
+	for _, quiero := range []string{"Iceberg", "f1", "1 sesiones", "webterm", "0 sesiones"} {
+		if !strings.Contains(got, quiero) {
+			t.Errorf("falta %q en:\n%s", quiero, got)
+		}
+	}
+}
+
+func TestListFoldersVacio(t *testing.T) {
+	s := New(nuevasSesiones())
+	res, _, _ := s.listFolders(context.Background(), reqCon("s1"), listFoldersArgs{})
+	if !strings.Contains(soloTexto(t, res), "no hay folders") {
+		t.Fatalf("se esperaba el aviso de que no hay folders")
+	}
+}
+
+// El error del duplicado tiene que nombrar el folder que ya existe: si no, la
+// salida natural del modelo es reintentar con una variante del nombre y
+// terminar creando el duplicado que esto viene a evitar.
+func TestCreateFolderDuplicadoSeñalaElExistente(t *testing.T) {
+	f := nuevasSesiones()
+	f.folders = []*store.Folder{{ID: "f1", Name: "Iceberg"}}
+	s := New(f)
+
+	_, _, err := s.createFolder(context.Background(), reqCon("s1"), createFolderArgs{Name: "iceberg"})
+	if err == nil {
+		t.Fatal("se esperaba error por duplicado")
+	}
+	for _, quiero := range []string{"Iceberg", "f1"} {
+		if !strings.Contains(err.Error(), quiero) {
+			t.Errorf("el error no menciona %q: %v", quiero, err)
+		}
+	}
+}
+
+func TestMoveSessionPorNombre(t *testing.T) {
+	f := nuevasSesiones()
+	f.folders = []*store.Folder{{ID: "f1", Name: "Iceberg"}}
+	s := New(f)
+
+	// Sin session_id: mueve la sesión que llama. Y el nombre matchea sin
+	// distinguir mayúsculas, que es como lo va a escribir el modelo.
+	if _, _, err := s.moveSession(context.Background(), reqCon("s1"),
+		moveSessionArgs{Folder: "iceberg"}); err != nil {
+		t.Fatalf("move_session: %v", err)
+	}
+	if got := f.existentes["s1"].FolderID; got == nil || *got != "f1" {
+		t.Fatalf("FolderID = %v, esperaba f1", got)
+	}
+
+	// Sin folder: la saca.
+	if _, _, err := s.moveSession(context.Background(), reqCon("s1"), moveSessionArgs{}); err != nil {
+		t.Fatalf("move_session sin folder: %v", err)
+	}
+	if got := f.existentes["s1"].FolderID; got != nil {
+		t.Fatalf("FolderID = %v, esperaba nil", *got)
+	}
+}
+
+// No crea folders al vuelo: un nombre mal escrito tiene que fallar, y el error
+// lista los que hay para que el reintento sea con uno real.
+func TestMoveSessionAFolderInexistenteListaLosQueHay(t *testing.T) {
+	f := nuevasSesiones()
+	f.folders = []*store.Folder{{ID: "f1", Name: "Iceberg"}, {ID: "f2", Name: "webterm"}}
+	s := New(f)
+
+	_, _, err := s.moveSession(context.Background(), reqCon("s1"),
+		moveSessionArgs{Folder: "icebrg"})
+	if err == nil {
+		t.Fatal("se esperaba error por folder inexistente")
+	}
+	for _, quiero := range []string{"icebrg", "Iceberg", "webterm"} {
+		if !strings.Contains(err.Error(), quiero) {
+			t.Errorf("el error no menciona %q: %v", quiero, err)
+		}
+	}
+	if f.existentes["s1"].FolderID != nil {
+		t.Fatal("movió la sesión igual")
 	}
 }

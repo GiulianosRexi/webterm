@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -70,6 +71,8 @@ func (s *Server) registerTools() {
 			"corriendo, con su estado actual. Útil para saber cómo vienen los checks de tu " +
 			"propio PR sin salir de la terminal.",
 	}, s.listLinks)
+
+	s.registerFolderTools()
 }
 
 func (s *Server) setContext(_ context.Context, req *sdk.CallToolRequest, args setContextArgs) (*sdk.CallToolResult, any, error) {
@@ -217,4 +220,144 @@ func estadoPR(state string, draft bool) string {
 		return "cerrado"
 	}
 	return strings.ToLower(state)
+}
+
+type listFoldersArgs struct{}
+
+type createFolderArgs struct {
+	Name string `json:"name" jsonschema:"nombre del folder; uno por proyecto"`
+}
+
+type moveSessionArgs struct {
+	Folder string `json:"folder" jsonschema:"nombre o id del folder destino; vacío saca la sesión de su folder"`
+	// Por defecto se mueve la sesión que llama, que es el caso normal. El id
+	// explícito está para cuando el usuario pide reorganizar varias de una.
+	SessionID string `json:"session_id,omitempty" jsonschema:"id de la sesión a mover; si se omite, la sesión en la que estás corriendo"`
+}
+
+// registerFolderTools agrega el manejo de folders.
+//
+// Borrar folders no está: es la única operación destructiva del conjunto y la
+// UI la tiene, con la confirmación a la vista.
+func (s *Server) registerFolderTools() {
+	sdk.AddTool(s.mcp, &sdk.Tool{
+		Name: "list_folders",
+		Description: "Lista los folders de WebTerm con cuántas sesiones tiene cada uno. " +
+			"Conviene llamarla antes de crear uno: así se reusa el que ya existe en vez " +
+			"de crear un duplicado con otro nombre.",
+	}, s.listFolders)
+
+	sdk.AddTool(s.mcp, &sdk.Tool{
+		Name: "create_folder",
+		Description: "Crea un folder en WebTerm. Un folder es un proyecto y agrupa sus " +
+			"sesiones. Falla si ya existe uno con ese nombre, sin distinguir mayúsculas.",
+	}, s.createFolder)
+
+	sdk.AddTool(s.mcp, &sdk.Tool{
+		Name: "move_session",
+		Description: "Mueve una sesión de WebTerm a un folder, o la saca de su folder si " +
+			"no se indica ninguno. El folder tiene que existir: no lo crea al vuelo, " +
+			"para que un nombre mal escrito falle en vez de generar un duplicado.",
+	}, s.moveSession)
+}
+
+func (s *Server) listFolders(_ context.Context, _ *sdk.CallToolRequest, _ listFoldersArgs) (*sdk.CallToolResult, any, error) {
+	folders, err := s.sessions.ListFolders()
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(folders) == 0 {
+		return text("no hay folders todavía"), nil, nil
+	}
+
+	sessions, err := s.sessions.List()
+	if err != nil {
+		return nil, nil, err
+	}
+	cuenta := map[string]int{}
+	for _, sess := range sessions {
+		if sess.FolderID != nil {
+			cuenta[*sess.FolderID]++
+		}
+	}
+
+	var b strings.Builder
+	for _, f := range folders {
+		fmt.Fprintf(&b, "%s (id %s): %d sesiones\n", f.Name, f.ID, cuenta[f.ID])
+	}
+	return text("%s", strings.TrimRight(b.String(), "\n")), nil, nil
+}
+
+func (s *Server) createFolder(_ context.Context, _ *sdk.CallToolRequest, args createFolderArgs) (*sdk.CallToolResult, any, error) {
+	f, err := s.sessions.CreateFolder(args.Name)
+	if errors.Is(err, store.ErrDuplicate) {
+		// El error dice cuál es el que ya existe: así la salida natural es
+		// usar ese, en vez de reintentar con una variante del nombre.
+		if existente, lerr := s.folderPorNombre(args.Name); lerr == nil && existente != nil {
+			return nil, nil, fmt.Errorf("ya existe el folder %q (id %s); usá ese", existente.Name, existente.ID)
+		}
+		return nil, nil, fmt.Errorf("ya existe un folder llamado %q", args.Name)
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	return text("folder %q creado (id %s)", f.Name, f.ID), nil, nil
+}
+
+func (s *Server) moveSession(_ context.Context, req *sdk.CallToolRequest, args moveSessionArgs) (*sdk.CallToolResult, any, error) {
+	id := strings.TrimSpace(args.SessionID)
+	if id == "" {
+		var err error
+		if id, err = s.resolve(req); err != nil {
+			return nil, nil, err
+		}
+	} else if _, err := s.sessions.Get(id); err != nil {
+		return nil, nil, fmt.Errorf("la sesión %s no existe", id)
+	}
+
+	destino := strings.TrimSpace(args.Folder)
+	if destino == "" {
+		if err := s.sessions.SetSessionFolder(id, nil); err != nil {
+			return nil, nil, err
+		}
+		return text("la sesión %s quedó sin folder", id), nil, nil
+	}
+
+	f, err := s.folderPorNombre(destino)
+	if err != nil {
+		return nil, nil, err
+	}
+	if f == nil {
+		disponibles, lerr := s.sessions.ListFolders()
+		if lerr != nil || len(disponibles) == 0 {
+			return nil, nil, fmt.Errorf("no existe el folder %q y no hay ninguno creado", destino)
+		}
+		nombres := make([]string, 0, len(disponibles))
+		for _, d := range disponibles {
+			nombres = append(nombres, d.Name)
+		}
+		return nil, nil, fmt.Errorf("no existe el folder %q; los que hay son: %s",
+			destino, strings.Join(nombres, ", "))
+	}
+
+	if err := s.sessions.SetSessionFolder(id, &f.ID); err != nil {
+		return nil, nil, err
+	}
+	return text("la sesión %s quedó en %q", id, f.Name), nil, nil
+}
+
+// folderPorNombre busca por id exacto o por nombre sin distinguir mayúsculas.
+// Devuelve nil sin error cuando no hay ninguno, para que quien llama decida
+// qué decir.
+func (s *Server) folderPorNombre(nombreOID string) (*store.Folder, error) {
+	folders, err := s.sessions.ListFolders()
+	if err != nil {
+		return nil, err
+	}
+	for _, f := range folders {
+		if f.ID == nombreOID || strings.EqualFold(f.Name, nombreOID) {
+			return f, nil
+		}
+	}
+	return nil, nil
 }
