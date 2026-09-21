@@ -63,6 +63,10 @@ export function TerminalView({
     term.open(host)
     loadWebgl(term)
     fit.fit()
+    // La terminal recién montada toma el foco: se cambia de sesión para
+    // escribir en ella, y además el buscador la remonta al saltar a otra, con
+    // lo cual el textarea que tenía el foco deja de existir.
+    term.focus()
 
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
     const ws = new WebSocket(

@@ -1,10 +1,7 @@
 import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { Session } from './api'
-
-function label(s: Session): string {
-  return s.title.trim() || s.cwd.split('/').filter(Boolean).pop() || s.id.slice(-6)
-}
+import { sessionLabel } from './session'
 
 // relative formatea el "hace cuánto" de la última actividad, que es lo que
 // más rápido dice cuál de todas las sesiones importa ahora.
@@ -72,7 +69,7 @@ export function SessionList({
 
   const startRename = (s: Session) => {
     setEditing(s.id)
-    setDraft(s.title || label(s))
+    setDraft(s.title || sessionLabel(s))
   }
 
   const commit = (id: string) => {
@@ -128,7 +125,7 @@ export function SessionList({
                 }}
                 title={`${s.cwd} · doble click para renombrar`}
               >
-                <span className="name-inner">{label(s)}</span>
+                <span className="name-inner">{sessionLabel(s)}</span>
               </span>
             )}
             <span className="when">{relative(s.last_active_at)}</span>

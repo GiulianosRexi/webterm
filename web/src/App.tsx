@@ -11,6 +11,7 @@ import { SessionList } from './SessionList'
 import { ResourcePanel } from './ResourcePanel'
 import { api, type Session } from './api'
 import { useEvents, type ServerEvent } from './useEvents'
+import { CommandPalette } from './CommandPalette'
 
 const label: Record<ConnState, string> = {
   connecting: 'conectando…',
@@ -58,6 +59,11 @@ export function App() {
   // cambió, no qué valor tiene.
   const [resourceTick, setResourceTick] = useState(0)
   const [sidebarWidth, setSidebarWidth] = useState(storedWidth)
+  const [paletteOpen, setPaletteOpen] = useState(false)
+  // El handler del atajo se registra una sola vez, así que lee el estado de
+  // acá en lugar de capturarlo en su closure —mismo patrón que selectedRef.
+  const paletteOpenRef = useRef(paletteOpen)
+  paletteOpenRef.current = paletteOpen
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1',
   )
@@ -114,6 +120,34 @@ export function App() {
   useEffect(() => {
     if (state === 'exited') void refresh()
   }, [state, refresh])
+
+  // Al cerrar el buscador el foco tiene que volver a la terminal. Sin esto
+  // queda en el body y el usuario no puede tipear: la peor forma de romper una
+  // terminal. xterm escucha en un textarea propio, que es el que hay que
+  // enfocar.
+  const closePalette = useCallback(() => {
+    setPaletteOpen(false)
+    requestAnimationFrame(() => {
+      document.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea')?.focus()
+    })
+  }, [])
+
+  // Cmd+K (Ctrl+K fuera de macOS) abre el buscador. Va en fase de captura
+  // porque si no xterm se come la tecla: con el foco dentro de la terminal es
+  // él quien recibe el teclado, y el evento nunca llegaría hasta acá.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key.toLowerCase() !== 'k' || !(e.metaKey || e.ctrlKey)) return
+      e.preventDefault()
+      e.stopPropagation()
+      // Cerrar con el atajo tiene que devolver el foco igual que cerrar con
+      // Escape, así que pasa por closePalette y no por setPaletteOpen.
+      if (paletteOpenRef.current) closePalette()
+      else setPaletteOpen(true)
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [closePalette])
 
   useEffect(() => {
     api
@@ -271,6 +305,15 @@ export function App() {
           )}
         </main>
       </div>
+
+      {paletteOpen && (
+        <CommandPalette
+          sessions={sessions}
+          selectedId={selected}
+          onSelect={setSelected}
+          onClose={closePalette}
+        />
+      )}
     </div>
   )
 }
