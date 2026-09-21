@@ -157,6 +157,15 @@ export function SessionList({
 
   const toggle = (key: string) => setCollapsed((c) => ({ ...c, [key]: !c[key] }))
 
+  // Al renombrar, el grupo queda expandido. Hace falta porque el primer click
+  // del doble click llega al encabezado y lo colapsa: sin esto, renombrar un
+  // folder abierto lo cerraría de paso.
+  const abrirRenombre = (key: string, nombre: string) => {
+    setCollapsed((c) => ({ ...c, [key]: false }))
+    setEditing(key)
+    setDraft(nombre)
+  }
+
   // Los items del menú de una sesión. Tiene dos vistas: la raíz y la de mover,
   // que reemplaza el contenido en vez de abrir un submenú flotante —un submenú
   // al lado del borde de la sidebar termina saliéndose de la pantalla.
@@ -353,13 +362,9 @@ export function SessionList({
                 ) : (
                   <span
                     className="folder-name"
-                    // El nombre no colapsa: si lo hiciera, el primer click del
-                    // doble click para renombrar cerraría el grupo.
-                    onClick={(e) => e.stopPropagation()}
                     onDoubleClick={(e) => {
                       e.stopPropagation()
-                      setEditing(g.key)
-                      setDraft(g.folder!.name)
+                      abrirRenombre(g.key, g.folder!.name)
                     }}
                     title="doble click para renombrar"
                   >
@@ -396,8 +401,7 @@ export function SessionList({
               label: 'Renombrar',
               onClick: () => {
                 cerrarMenu()
-                setEditing(folderDelMenu.id)
-                setDraft(folderDelMenu.name)
+                abrirRenombre(folderDelMenu.id, folderDelMenu.name)
               },
             },
             {

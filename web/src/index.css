@@ -691,13 +691,10 @@ body.resizing .terminal-host { pointer-events: none; }
    uno cerrado, que usan glifos de distinto ancho. */
 .folder-head .caret {
   flex: 0 0 12px;
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1;
   text-align: center;
-  opacity: 0.8;
 }
-
-.folder-head:hover .caret { opacity: 1; }
 
 .folder-name {
   flex: 1 1 auto;
