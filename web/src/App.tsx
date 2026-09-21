@@ -342,6 +342,7 @@ export function App() {
       {paletteOpen && (
         <CommandPalette
           sessions={sessions}
+          folders={folders}
           selectedId={selected}
           onSelect={setSelected}
           onClose={closePalette}
