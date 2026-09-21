@@ -21,7 +21,7 @@ package store
 // daemon.ProtocolVersion y avisar que hace falta `webterm daemon restart`
 // —que mata las sesiones, y por eso es explícito—. Lo mismo está resumido en el
 // README, en "Arquitectura: daemon y orquestador".
-var migrations = []string{schemaV1, schemaV2}
+var migrations = []string{schemaV1, schemaV2, schemaV3}
 
 // schemaV1 define el modelo completo de sesión del diseño, incluidos los
 // campos que la UI de M2 todavía no usa (folder_id es M4, work_status y
@@ -84,4 +84,26 @@ CREATE TABLE session_resources (
 
 CREATE INDEX idx_resources_ref ON session_resources(ref);
 CREATE INDEX idx_resources_session ON session_resources(session_id);
+`
+
+// schemaV3 agrega los folders de M4. sessions.folder_id ya existe desde
+// schemaV1, así que esto es puramente aditivo y un daemon viejo no se entera.
+//
+// Sin foreign key contra sessions a propósito: agregársela obligaría a recrear
+// la tabla sessions, que es exactamente la clase de migración destructiva que
+// el comentario de arriba prohíbe. La consistencia la mantiene DeleteFolder,
+// que saca a las sesiones del folder en la misma transacción en que lo borra.
+//
+// El índice único es NOCASE para que "Iceberg" e "iceberg" sean el mismo
+// folder: si no, crear desde la UI y crear desde el MCP terminan produciendo
+// dos que en pantalla se ven idénticos.
+const schemaV3 = `
+CREATE TABLE folders (
+  id         TEXT    PRIMARY KEY,
+  name       TEXT    NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
+CREATE UNIQUE INDEX idx_folders_name ON folders(name COLLATE NOCASE);
+CREATE INDEX idx_sessions_folder ON sessions(folder_id);
 `

@@ -383,6 +383,14 @@ func (s *Store) execAffecting(query string, args ...any) error {
 	if err != nil {
 		return err
 	}
+	return rowsTouched(res)
+}
+
+// rowsTouched traduce "ninguna fila" a ErrNotFound. Está separado de
+// execAffecting porque hay statements que necesitan correr su propio Exec: los
+// que distinguen la violación de UNIQUE por el texto del error, y los que van
+// adentro de una transacción.
+func rowsTouched(res sql.Result) error {
 	n, err := res.RowsAffected()
 	if err != nil {
 		return err
