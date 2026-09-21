@@ -824,3 +824,20 @@ body.resizing .terminal-host { pointer-events: none; }
   font-size: 13px;
   outline: none;
 }
+
+/* El folder de cada sesión, al lado del nombre. Apagado y con el icono
+   adelante: dice de dónde viene el resultado sin competir con el título. */
+.palette-folder {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+
+.palette-folder mark {
+  background: transparent;
+  color: var(--accent);
+  font-weight: 600;
+}

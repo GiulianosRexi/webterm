@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { Folder as FolderIcon, X } from 'lucide-react'
 import type { Folder, Session } from './api'
 import { sessionLabel } from './session'
-import { rank, type FuzzyMatch } from './fuzzy'
+import { fuzzyMatch, rank, type FuzzyMatch } from './fuzzy'
 
 // Highlight parte el texto en tramos que matchearon y tramos que no, en vez de
 // envolver cada letra por separado: un título de 45 caracteres generaría 45
@@ -32,7 +32,17 @@ function Highlight({ text, positions }: { text: string; positions: number[] }) {
 // Un resultado navegable. Los encabezados de sección no entran acá: se dibujan
 // al vuelo y no se pueden seleccionar con las flechas.
 type Item =
-  | { kind: 'session'; session: Session; match: FuzzyMatch }
+  | {
+      kind: 'session'
+      session: Session
+      // El folder al que pertenece, para mostrarlo al lado del nombre.
+      folder: Folder | null
+      // Highlights por campo. El orden lo decide el match contra título y
+      // folder juntos, pero resaltar necesita saber qué letras cayeron en cada
+      // uno: las posiciones del texto concatenado no sirven para pintar.
+      tituloPos: number[]
+      folderPos: number[]
+    }
   | { kind: 'folder'; folder: Folder; match: FuzzyMatch }
 
 export function CommandPalette({
@@ -56,11 +66,26 @@ export function CommandPalette({
 
   const items = useMemo<Item[]>(() => {
     const visibles = filtro ? sessions.filter((s) => s.folder_id === filtro.id) : sessions
-    const out: Item[] = rank(query, visibles, sessionLabel).map((r) => ({
-      kind: 'session',
-      session: r.item,
-      match: r.match,
-    }))
+    const folderDe = (s: Session) => folders.find((f) => f.id === s.folder_id) ?? null
+
+    // Se busca contra el título y el nombre del folder juntos: así "webterm
+    // mejoras" encuentra algo que en ningún campo está escrito completo, y
+    // buscar el nombre de un proyecto trae sus sesiones aunque no lo
+    // mencionen.
+    const out: Item[] = rank(
+      query,
+      visibles,
+      (s) => `${sessionLabel(s)} ${folderDe(s)?.name ?? ''}`,
+    ).map((r) => {
+      const folder = folderDe(r.item)
+      return {
+        kind: 'session' as const,
+        session: r.item,
+        folder,
+        tituloPos: fuzzyMatch(query, sessionLabel(r.item))?.positions ?? [],
+        folderPos: folder ? (fuzzyMatch(query, folder.name)?.positions ?? []) : [],
+      }
+    })
 
     // Con un folder ya elegido no se ofrecen folders: la búsqueda quedó
     // adentro de ese, y mostrar otros invitaría a saltar en vez de filtrar.
@@ -184,11 +209,16 @@ export function CommandPalette({
                   <>
                     <span className="dot" data-status={item.session.pty_status} />
                     <span className="palette-name">
-                      <Highlight
-                        text={sessionLabel(item.session)}
-                        positions={item.match.positions}
-                      />
+                      <Highlight text={sessionLabel(item.session)} positions={item.tituloPos} />
                     </span>
+                    {/* Con un folder ya elegido el dato sobra: todas las filas
+                        son de ese folder y repetirlo en cada una es ruido. */}
+                    {item.folder && !filtro && (
+                      <span className="palette-folder">
+                        <FolderIcon size={11} />
+                        <Highlight text={item.folder.name} positions={item.folderPos} />
+                      </span>
+                    )}
                     {item.session.id === selectedId && (
                       <span className="palette-hint">actual</span>
                     )}
