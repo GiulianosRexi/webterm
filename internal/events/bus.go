@@ -16,6 +16,11 @@ const (
 	SessionCreated  Kind = "session.created"
 	SessionUpdated  Kind = "session.updated"
 	SessionDeleted  Kind = "session.deleted"
+	// Los de folder no llevan sesión: el cliente vuelve a pedir la lista de
+	// folders entera, que es corta.
+	FolderCreated Kind = "folder.created"
+	FolderUpdated Kind = "folder.updated"
+	FolderDeleted Kind = "folder.deleted"
 )
 
 // Event es lo que se reparte. Seq lo asigna el bus.

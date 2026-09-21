@@ -527,6 +527,52 @@ func (m *Manager) ListResources(ctx context.Context, sessionID string) ([]*Linke
 
 // AddResource linkea un recurso a la sesión. system y type se infieren del
 // propio link; se aceptan explícitos como escape hatch.
+// ListFolders devuelve los folders ordenados por nombre.
+func (m *Manager) ListFolders() ([]*store.Folder, error) { return m.st.ListFolders() }
+
+// CreateFolder crea un folder vacío.
+func (m *Manager) CreateFolder(name string) (*store.Folder, error) {
+	f, err := m.st.CreateFolder(name)
+	if err != nil {
+		return nil, err
+	}
+	m.publish(events.FolderCreated, "")
+	return f, nil
+}
+
+// RenameFolder le cambia el nombre.
+func (m *Manager) RenameFolder(id, name string) error {
+	if err := m.st.RenameFolder(id, name); err != nil {
+		return err
+	}
+	m.publish(events.FolderUpdated, "")
+	return nil
+}
+
+// DeleteFolder borra el folder; sus sesiones quedan sin folder.
+//
+// El evento que sale es folder.deleted y no uno por cada sesión que quedó
+// suelta: el cliente refetchea la lista entera igual, y emitir N eventos por
+// una acción sola llenaría el buffer de los suscriptores lentos al pedo.
+func (m *Manager) DeleteFolder(id string) error {
+	if err := m.st.DeleteFolder(id); err != nil {
+		return err
+	}
+	m.publish(events.FolderDeleted, "")
+	return nil
+}
+
+// SetSessionFolder mueve una sesión a un folder, o la saca con nil.
+func (m *Manager) SetSessionFolder(sessionID string, folderID *string) error {
+	if err := m.st.SetSessionFolder(sessionID, folderID); err != nil {
+		return err
+	}
+	// Lo que cambió es la sesión, no el folder: es la fila que la UI tiene que
+	// volver a dibujar, y encima en otro lugar de la lista.
+	m.publish(events.SessionUpdated, sessionID)
+	return nil
+}
+
 func (m *Manager) AddResource(sessionID, rawURL, system, typ string) (*store.Resource, error) {
 	if _, err := m.st.GetSession(sessionID); err != nil {
 		return nil, err

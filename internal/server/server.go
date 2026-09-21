@@ -66,6 +66,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/sessions/{id}/kv/{key}", s.handleSetKV)
 	mux.HandleFunc("DELETE /api/sessions/{id}/kv/{key}", s.handleDeleteKV)
 
+	mux.HandleFunc("GET /api/folders", s.handleListFolders)
+	mux.HandleFunc("POST /api/folders", s.handleCreateFolder)
+	mux.HandleFunc("PATCH /api/folders/{id}", s.handleRenameFolder)
+	mux.HandleFunc("DELETE /api/folders/{id}", s.handleDeleteFolder)
+	mux.HandleFunc("PUT /api/sessions/{id}/folder", s.handleSetSessionFolder)
+
 	mux.HandleFunc("GET /api/sessions/{id}/resources", s.handleListResources)
 	mux.HandleFunc("POST /api/sessions/{id}/resources", s.handleLinkResource)
 	mux.HandleFunc("DELETE /api/sessions/{id}/resources/{rid}", s.handleUnlinkResource)
