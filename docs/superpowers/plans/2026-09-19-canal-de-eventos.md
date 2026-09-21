@@ -984,6 +984,6 @@ MSG
 
 - [x] `go test ./... -race` en verde.
 - [x] `npm --prefix web run build` sin errores.
-- [ ] `curl -N http://127.0.0.1:7788/api/events` muestra el resync y después los eventos. (pendiente: lo verifica el usuario con el server reiniciado)
-- [ ] Linkear por MCP se ve en la UI al instante. (pendiente: lo verifica el usuario con el server reiniciado)
+- [x] `curl -N http://127.0.0.1:7788/api/events` muestra el resync y después los eventos. (verificado el 2026-09-19 con el orquestador reiniciado: llegó `event: resync` al abrir y un `id: 1 / event: session.updated` tras un PATCH de rename. Las 3 sesiones vivas sobrevivieron el restart.)
+- [ ] Linkear por MCP se ve en la UI al instante. (pendiente: el lado del server está verificado — el evento sale; falta confirmar en el navegador que el EventSource lo consume y el panel se refresca solo)
 - [x] Las sesiones que estaban corriendo antes del restart del orquestador siguen vivas y attacheables (el daemon no se tocó).
