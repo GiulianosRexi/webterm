@@ -8,6 +8,9 @@ export type EventKind =
   | 'session.created'
   | 'session.updated'
   | 'session.deleted'
+  | 'folder.created'
+  | 'folder.updated'
+  | 'folder.deleted'
 
 export interface ServerEvent {
   seq: number
@@ -23,6 +26,9 @@ const KINDS: EventKind[] = [
   'session.created',
   'session.updated',
   'session.deleted',
+  'folder.created',
+  'folder.updated',
+  'folder.deleted',
 ]
 
 /**

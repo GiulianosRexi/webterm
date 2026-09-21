@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react'
-import { createPortal } from 'react-dom'
-import type { Session } from './api'
+import { Fragment, useEffect, useMemo, useState } from 'react'
+import type { Folder, Session } from './api'
 import { sessionLabel } from './session'
+import { Menu, MENU_WIDTH, type MenuItem } from './Menu'
 
 // relative formatea el "hace cuánto" de la última actividad, que es lo que
 // más rápido dice cuál de todas las sesiones importa ahora.
@@ -13,8 +13,69 @@ function relative(ms: number): string {
   return `hace ${Math.floor(secs / 86400)} d`
 }
 
+const COLLAPSED_KEY = 'webterm.foldersCollapsed'
+
+// SIN_FOLDER identifica al grupo de las sesiones sueltas. No es un folder real
+// —en la base eso es folder_id NULL— pero necesita una clave propia para el
+// estado de colapso.
+const SIN_FOLDER = '__sin_folder__'
+
+interface Grupo {
+  key: string
+  folder: Folder | null
+  sessions: Session[]
+}
+
+/**
+ * agrupar reparte las sesiones por folder.
+ *
+ * Sin folders devuelve un único grupo sin encabezado: la sidebar tiene que
+ * verse igual que antes de que existieran, que es como va a estar la primera
+ * vez que alguien la abra.
+ *
+ * Con folders van todos, en el orden que trae el backend (alfabético), y las
+ * sueltas al final. Un folder vacío se muestra igual: es la única señal de que
+ * existe, y esconderlo haría que crear uno no tuviera efecto visible.
+ */
+function agrupar(sessions: Session[], folders: Folder[]): Grupo[] {
+  if (folders.length === 0) {
+    return [{ key: SIN_FOLDER, folder: null, sessions }]
+  }
+
+  const porFolder = new Map<string, Session[]>()
+  const sueltas: Session[] = []
+  const existe = new Set(folders.map((f) => f.id))
+
+  for (const s of sessions) {
+    // Un folder_id que ya no existe cuenta como suelta: sin foreign key esa
+    // fila puede quedar colgada, y esconder la sesión sería peor que mostrarla
+    // fuera de lugar.
+    if (s.folder_id && existe.has(s.folder_id)) {
+      const lista = porFolder.get(s.folder_id) ?? []
+      lista.push(s)
+      porFolder.set(s.folder_id, lista)
+    } else {
+      sueltas.push(s)
+    }
+  }
+
+  const grupos: Grupo[] = folders.map((f) => ({
+    key: f.id,
+    folder: f,
+    sessions: porFolder.get(f.id) ?? [],
+  }))
+  if (sueltas.length > 0) {
+    grupos.push({ key: SIN_FOLDER, folder: null, sessions: sueltas })
+  }
+  return grupos
+}
+
+type MenuSesion = { kind: 'session'; id: string; x: number; y: number; moving?: boolean }
+type MenuState = MenuSesion | { kind: 'folder'; id: string; x: number; y: number }
+
 export function SessionList({
   sessions,
+  folders,
   selectedId,
   busy,
   onSelect,
@@ -24,8 +85,13 @@ export function SessionList({
   onRestart,
   onDelete,
   onCollapse,
+  onMove,
+  onCreateFolderAndMove,
+  onRenameFolder,
+  onDeleteFolder,
 }: {
   sessions: Session[]
+  folders: Folder[]
   selectedId: string | null
   busy: boolean
   onSelect: (id: string) => void
@@ -35,48 +101,202 @@ export function SessionList({
   onRestart: (id: string) => void
   onDelete: (id: string) => void
   onCollapse: () => void
+  onMove: (sessionId: string, folderId: string | null) => void
+  onCreateFolderAndMove: (sessionId: string, name: string) => void
+  onRenameFolder: (id: string, name: string) => void
+  onDeleteFolder: (id: string) => void
 }) {
   const [editing, setEditing] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
-  // El menú guarda el id, no la sesión: así el poll de App puede cambiarle el
-  // pty_status por debajo y los items se recalculan solos.
-  const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null)
+  // El menú guarda el id, no el objeto: así el refresco puede cambiarle el
+  // estado por debajo y los items se recalculan solos.
+  const [menu, setMenu] = useState<MenuState | null>(null)
+  // Nombre del folder nuevo mientras se escribe, o null si no se está creando.
+  const [nuevoFolder, setNuevoFolder] = useState<string | null>(null)
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => {
+    try {
+      return JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? '{}') as Record<string, boolean>
+    } catch {
+      return {}
+    }
+  })
 
-  // Se cierra con Escape, con un click afuera y con cualquier cosa que lo
-  // desalinee de la fila que lo abrió (scroll de la lista, resize de la
-  // ventana): está en position: fixed, no sigue a la fila.
   useEffect(() => {
-    if (!menu) return
-    const close = () => setMenu(null)
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') close()
-    }
-    window.addEventListener('pointerdown', close)
-    window.addEventListener('resize', close)
-    window.addEventListener('scroll', close, true)
-    window.addEventListener('keydown', onKey)
-    return () => {
-      window.removeEventListener('pointerdown', close)
-      window.removeEventListener('resize', close)
-      window.removeEventListener('scroll', close, true)
-      window.removeEventListener('keydown', onKey)
-    }
-  }, [menu])
+    localStorage.setItem(COLLAPSED_KEY, JSON.stringify(collapsed))
+  }, [collapsed])
 
-  // x/y son la esquina superior izquierda deseada; SessionMenu solo la corrige
-  // si el menú no entra en la ventana.
-  const openMenu = (id: string, x: number, y: number) => setMenu({ id, x, y })
-
-  const startRename = (s: Session) => {
-    setEditing(s.id)
-    setDraft(s.title || sessionLabel(s))
-  }
+  const grupos = useMemo(() => agrupar(sessions, folders), [sessions, folders])
 
   const commit = (id: string) => {
     setEditing(null)
     const title = draft.trim()
     if (title) onRename(id, title)
   }
+
+  const commitFolder = (id: string) => {
+    setEditing(null)
+    const name = draft.trim()
+    if (name) onRenameFolder(id, name)
+  }
+
+  const cerrarMenu = () => {
+    setMenu(null)
+    setNuevoFolder(null)
+  }
+
+  const startRename = (s: Session) => {
+    setEditing(s.id)
+    setDraft(s.title || sessionLabel(s))
+  }
+
+  const toggle = (key: string) => setCollapsed((c) => ({ ...c, [key]: !c[key] }))
+
+  // Los items del menú de una sesión. Tiene dos vistas: la raíz y la de mover,
+  // que reemplaza el contenido en vez de abrir un submenú flotante —un submenú
+  // al lado del borde de la sidebar termina saliéndose de la pantalla.
+  const itemsDeSesion = (s: Session, estado: MenuSesion): MenuItem[] => {
+    if (estado.moving) {
+      const items: MenuItem[] = [
+        { label: '‹ volver', onClick: () => setMenu({ ...estado, moving: false }) },
+        {
+          label: 'Sin proyecto',
+          current: !s.folder_id,
+          separated: true,
+          onClick: () => {
+            cerrarMenu()
+            onMove(s.id, null)
+          },
+        },
+      ]
+      for (const f of folders) {
+        items.push({
+          label: f.name,
+          current: s.folder_id === f.id,
+          onClick: () => {
+            cerrarMenu()
+            onMove(s.id, f.id)
+          },
+        })
+      }
+      items.push({
+        label: 'Nuevo folder…',
+        separated: true,
+        onClick: () => setNuevoFolder(''),
+      })
+      return items
+    }
+
+    const items: MenuItem[] = [
+      {
+        label: 'Renombrar',
+        onClick: () => {
+          cerrarMenu()
+          startRename(s)
+        },
+      },
+      { label: 'Mover a…', onClick: () => setMenu({ ...estado, moving: true }) },
+    ]
+    // starting es la ventana en la que el orquestador ya pidió el spawn y
+    // todavía no supo si el daemon lo confirmó. Ni Parar ni Reanudar tienen
+    // sentido ahí: Restart verifica contra el daemon que la sesión no esté
+    // viva y spawnea de nuevo, y dispararlo mientras el spawn original sigue
+    // en vuelo podría chocar con él.
+    if (s.pty_status === 'running') {
+      items.push({
+        label: 'Parar',
+        onClick: () => {
+          cerrarMenu()
+          onKill(s.id)
+        },
+      })
+    }
+    if (s.pty_status === 'exited') {
+      items.push({
+        label: 'Reanudar',
+        onClick: () => {
+          cerrarMenu()
+          onRestart(s.id)
+        },
+      })
+    }
+    // Borrar sí queda disponible en starting: no le exige nada al daemon sobre
+    // el pty y es la única forma de cancelar una sesión que quedó pegada
+    // arrancando sin esperar los 30s del sweep.
+    items.push({
+      label: 'Borrar',
+      danger: true,
+      separated: true,
+      onClick: () => {
+        cerrarMenu()
+        onDelete(s.id)
+      },
+    })
+    return items
+  }
+
+  const renderSesion = (s: Session) => (
+    <li
+      key={s.id}
+      className={'session' + (s.id === selectedId ? ' selected' : '')}
+      onClick={() => onSelect(s.id)}
+      onContextMenu={(e) => {
+        e.preventDefault()
+        setMenu({ kind: 'session', id: s.id, x: e.clientX, y: e.clientY })
+      }}
+    >
+      <span className="dot" data-status={s.pty_status} />
+      {editing === s.id ? (
+        <input
+          className="rename"
+          autoFocus
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={() => commit(s.id)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') commit(s.id)
+            if (e.key === 'Escape') setEditing(null)
+          }}
+          onClick={(e) => e.stopPropagation()}
+        />
+      ) : (
+        <span
+          className="name"
+          onDoubleClick={(e) => {
+            e.stopPropagation()
+            startRename(s)
+          }}
+          title={`${s.cwd} · doble click para renombrar`}
+        >
+          <span className="name-inner">{sessionLabel(s)}</span>
+        </span>
+      )}
+      <span className="when">{relative(s.last_active_at)}</span>
+      {s.pty_status === 'starting' && (
+        <span className="starting-hint" title="La sesión está arrancando">
+          …
+        </span>
+      )}
+      <span className="actions" onClick={(e) => e.stopPropagation()}>
+        <button
+          className="menu-trigger"
+          title="Acciones de la sesión"
+          aria-label="Acciones de la sesión"
+          aria-haspopup="menu"
+          onClick={(e) => {
+            const r = e.currentTarget.getBoundingClientRect()
+            setMenu({ kind: 'session', id: s.id, x: r.right - MENU_WIDTH, y: r.bottom + 4 })
+          }}
+        >
+          ⋯
+        </button>
+      </span>
+    </li>
+  )
+
+  const sesionDelMenu =
+    menu?.kind === 'session' ? (sessions.find((s) => s.id === menu.id) ?? null) : null
+  const folderDelMenu =
+    menu?.kind === 'folder' ? (folders.find((f) => f.id === menu.id) ?? null) : null
 
   return (
     <aside className="sidebar">
@@ -91,158 +311,126 @@ export function SessionList({
       </div>
 
       <ul className="session-list">
-        {sessions.length === 0 && <li className="empty">todavía no hay ninguna</li>}
-        {sessions.map((s) => (
-          <li
-            key={s.id}
-            className={'session' + (s.id === selectedId ? ' selected' : '')}
-            onClick={() => onSelect(s.id)}
-            onContextMenu={(e) => {
-              e.preventDefault()
-              openMenu(s.id, e.clientX, e.clientY)
-            }}
-          >
-            <span className="dot" data-status={s.pty_status} />
-            {editing === s.id ? (
-              <input
-                className="rename"
-                autoFocus
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                onBlur={() => commit(s.id)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') commit(s.id)
-                  if (e.key === 'Escape') setEditing(null)
-                }}
-                onClick={(e) => e.stopPropagation()}
-              />
-            ) : (
-              <span
-                className="name"
-                onDoubleClick={(e) => {
-                  e.stopPropagation()
-                  startRename(s)
-                }}
-                title={`${s.cwd} · doble click para renombrar`}
-              >
-                <span className="name-inner">{sessionLabel(s)}</span>
-              </span>
-            )}
-            <span className="when">{relative(s.last_active_at)}</span>
-            {s.pty_status === 'starting' && (
-              <span className="starting-hint" title="La sesión está arrancando">
-                …
-              </span>
-            )}
-            <span className="actions" onClick={(e) => e.stopPropagation()}>
-              <button
-                className="menu-trigger"
-                title="Acciones de la sesión"
-                aria-label="Acciones de la sesión"
-                aria-haspopup="menu"
-                onClick={(e) => {
-                  const r = e.currentTarget.getBoundingClientRect()
-                  openMenu(s.id, r.right - MENU_WIDTH, r.bottom + 4)
+        {sessions.length === 0 && folders.length === 0 && (
+          <li className="empty">todavía no hay ninguna</li>
+        )}
+
+        {grupos.map((g) => (
+          <Fragment key={g.key}>
+            {/* Sin folders no hay encabezados y la lista se ve como siempre. */}
+            {folders.length > 0 && (
+              <li
+                className="folder-head"
+                onClick={() => toggle(g.key)}
+                onContextMenu={(e) => {
+                  if (!g.folder) return
+                  e.preventDefault()
+                  setMenu({ kind: 'folder', id: g.folder.id, x: e.clientX, y: e.clientY })
                 }}
               >
-                ⋯
-              </button>
-            </span>
-          </li>
+                <span className="caret">{collapsed[g.key] ? '▸' : '▾'}</span>
+                {editing === g.key && g.folder ? (
+                  <input
+                    className="rename"
+                    autoFocus
+                    value={draft}
+                    onChange={(e) => setDraft(e.target.value)}
+                    onBlur={() => commitFolder(g.key)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') commitFolder(g.key)
+                      if (e.key === 'Escape') setEditing(null)
+                    }}
+                    onClick={(e) => e.stopPropagation()}
+                  />
+                ) : (
+                  <span
+                    className="folder-name"
+                    // El nombre no colapsa: si lo hiciera, el primer click del
+                    // doble click para renombrar cerraría el grupo.
+                    onClick={(e) => e.stopPropagation()}
+                    onDoubleClick={(e) => {
+                      if (!g.folder) return
+                      e.stopPropagation()
+                      setEditing(g.key)
+                      setDraft(g.folder.name)
+                    }}
+                    title={g.folder ? 'doble click para renombrar' : 'sesiones sin proyecto'}
+                  >
+                    {g.folder ? g.folder.name : 'Sin proyecto'}
+                  </span>
+                )}
+                <span className="folder-count">{g.sessions.length}</span>
+              </li>
+            )}
+
+            {!collapsed[g.key] && g.sessions.map(renderSesion)}
+          </Fragment>
         ))}
       </ul>
 
-      {menu && (
-        <SessionMenu
-          session={sessions.find((s) => s.id === menu.id) ?? null}
+      {menu && sesionDelMenu && (
+        <Menu
           x={menu.x}
           y={menu.y}
-          busy={busy}
-          onClose={() => setMenu(null)}
-          onRename={startRename}
-          onKill={onKill}
-          onRestart={onRestart}
-          onDelete={onDelete}
+          items={itemsDeSesion(sesionDelMenu, menu as MenuSesion)}
+          onClose={cerrarMenu}
+          header={menu.kind === 'session' && menu.moving ? 'Mover a' : undefined}
         />
       )}
-    </aside>
-  )
-}
 
-const MENU_WIDTH = 180
-const MENU_ITEM_H = 28
+      {menu && folderDelMenu && (
+        <Menu
+          x={menu.x}
+          y={menu.y}
+          header={folderDelMenu.name}
+          onClose={cerrarMenu}
+          items={[
+            {
+              label: 'Renombrar',
+              onClick: () => {
+                cerrarMenu()
+                setEditing(folderDelMenu.id)
+                setDraft(folderDelMenu.name)
+              },
+            },
+            {
+              label: 'Borrar folder',
+              danger: true,
+              separated: true,
+              onClick: () => {
+                cerrarMenu()
+                onDeleteFolder(folderDelMenu.id)
+              },
+            },
+          ]}
+        />
+      )}
 
-function SessionMenu({
-  session,
-  x,
-  y,
-  busy,
-  onClose,
-  onRename,
-  onKill,
-  onRestart,
-  onDelete,
-}: {
-  session: Session | null
-  x: number
-  y: number
-  busy: boolean
-  onClose: () => void
-  onRename: (s: Session) => void
-  onKill: (id: string) => void
-  onRestart: (id: string) => void
-  onDelete: (id: string) => void
-}) {
-  // La sesión puede haber desaparecido entre que se abrió el menú y este
-  // render: el poll corre cada 3s y pudo borrarla otra pestaña.
-  if (!session) return null
-
-  const run = (fn: () => void) => () => {
-    onClose()
-    fn()
-  }
-
-  // starting no ofrece ni Parar ni Reanudar: Restart verifica contra el daemon
-  // que la sesión no esté viva y spawnea de nuevo, y dispararlo mientras el
-  // spawn original sigue en vuelo podría chocar con él. Es transitorio, así que
-  // alcanza con esperar. Borrar sí queda, porque no le exige nada al pty y es
-  // la única forma de cancelar una sesión pegada sin esperar el sweep.
-  const items: { label: string; onClick: () => void; danger?: boolean }[] = [
-    { label: 'Renombrar', onClick: run(() => onRename(session)) },
-  ]
-  if (session.pty_status === 'running') {
-    items.push({ label: 'Parar', onClick: run(() => onKill(session.id)) })
-  }
-  if (session.pty_status === 'exited') {
-    items.push({ label: 'Reanudar', onClick: run(() => onRestart(session.id)) })
-  }
-  items.push({ label: 'Borrar', onClick: run(() => onDelete(session.id)), danger: true })
-
-  // Alto estimado a partir de los items (más el separador y el padding) para
-  // poder voltear el menú hacia arriba antes de pintarlo, sin un frame en el
-  // que se vea desbordando la ventana.
-  const height = items.length * MENU_ITEM_H + 9 + 8
-  const left = Math.max(8, Math.min(x, window.innerWidth - MENU_WIDTH - 8))
-  const top = y + height > window.innerHeight - 8 ? Math.max(8, y - height - 8) : y
-
-  return createPortal(
-    <div
-      className="session-menu"
-      role="menu"
-      style={{ left, top, width: MENU_WIDTH }}
-      onPointerDown={(e) => e.stopPropagation()}
-      onClick={(e) => e.stopPropagation()}
-      onContextMenu={(e) => e.preventDefault()}
-    >
-      {items.map((item, i) => (
-        <div key={item.label}>
-          {item.danger && i > 0 && <hr />}
-          <button role="menuitem" className={item.danger ? 'danger' : ''} disabled={busy} onClick={item.onClick}>
-            {item.label}
-          </button>
+      {/* El campo del folder nuevo se dibuja encima del menú, que sigue
+          abierto: al confirmar se crea y la sesión se mueve ahí mismo. */}
+      {nuevoFolder !== null && menu?.kind === 'session' && (
+        <div
+          className="folder-nuevo"
+          style={{ left: menu.x, top: menu.y, width: MENU_WIDTH }}
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          <input
+            autoFocus
+            value={nuevoFolder}
+            placeholder="Nombre del proyecto"
+            onChange={(e) => setNuevoFolder(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') setNuevoFolder(null)
+              if (e.key === 'Enter') {
+                const name = nuevoFolder.trim()
+                const id = menu.id
+                cerrarMenu()
+                if (name) onCreateFolderAndMove(id, name)
+              }
+            }}
+          />
         </div>
-      ))}
-    </div>,
-    document.body,
+      )}
+    </aside>
   )
 }

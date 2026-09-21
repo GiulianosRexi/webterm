@@ -667,3 +667,86 @@ body.resizing .terminal-host { pointer-events: none; }
   color: var(--fg-dim);
   font-size: 13px;
 }
+
+/* Encabezado de folder dentro de la lista de sesiones. Comparte la caja de
+   32px con las filas para que la lista no cambie de ritmo al agruparse. */
+.folder-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--fg-dim);
+  user-select: none;
+}
+
+.folder-head:hover { background: rgba(255, 255, 255, 0.04); }
+
+.folder-head .caret {
+  flex: 0 0 10px;
+  font-size: 9px;
+}
+
+.folder-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.folder-count {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-dim);
+}
+
+/* Las sesiones de un folder van indentadas hasta la altura de su nombre, para
+   que se lea a qué grupo pertenecen sin tener que seguir una línea. */
+.folder-head + .session,
+.folder-head + .session ~ .session {
+  margin-left: 16px;
+}
+
+.menu-header {
+  padding: 4px 8px 6px;
+  color: var(--fg-dim);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* El folder en el que la sesión ya está: se marca en vez de deshabilitarse,
+   así el menú dice dónde está parado sin que el item se vuelva inerte. */
+.session-menu button.current { color: var(--accent); }
+
+/* Campo para nombrar un folder nuevo. Se dibuja sobre el menú abierto, en sus
+   mismas coordenadas. */
+.folder-nuevo {
+  position: fixed;
+  z-index: 60;
+  padding: 4px;
+  background: var(--bg-chrome);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+
+.folder-nuevo input {
+  width: 100%;
+  padding: 4px 6px;
+  border: 0;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+}

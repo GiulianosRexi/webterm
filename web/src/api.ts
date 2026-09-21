@@ -43,6 +43,13 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T
 }
 
+// Folder agrupa sesiones. Un folder es un proyecto: no se anidan.
+export interface Folder {
+  id: string
+  name: string
+  created_at: number
+}
+
 export const api = {
   list: () => req<Session[]>('/api/sessions'),
   create: (body: { title?: string; cwd?: string; cols: number; rows: number }) =>
@@ -68,6 +75,22 @@ export const api = {
       daemon_error?: string
       sessions?: number
     }>('/api/health'),
+  folders: {
+    list: () => req<Folder[]>('/api/folders'),
+    create: (name: string) =>
+      req<Folder>('/api/folders', { method: 'POST', body: JSON.stringify({ name }) }),
+    rename: (id: string, name: string) =>
+      req<void>(`/api/folders/${id}`, { method: 'PATCH', body: JSON.stringify({ name }) }),
+    remove: (id: string) => req<void>(`/api/folders/${id}`, { method: 'DELETE' }),
+    // folderId null saca la sesión de su folder. Va en un endpoint propio y no
+    // en el PATCH de la sesión porque ahí "no tocar" y "sacala" serían lo
+    // mismo: ausente y null llegan igual al backend.
+    setSession: (sessionId: string, folderId: string | null) =>
+      req<void>(`/api/sessions/${sessionId}/folder`, {
+        method: 'PUT',
+        body: JSON.stringify({ folder_id: folderId }),
+      }),
+  },
   resources: {
     list: (sessionId: string) =>
       req<LinkedResource[]>(`/api/sessions/${sessionId}/resources`),

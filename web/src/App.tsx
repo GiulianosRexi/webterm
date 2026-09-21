@@ -9,7 +9,7 @@ import {
 import { TerminalView, type ConnState } from './TerminalView'
 import { SessionList } from './SessionList'
 import { ResourcePanel } from './ResourcePanel'
-import { api, type Session } from './api'
+import { api, type Folder, type Session } from './api'
 import { useEvents, type ServerEvent } from './useEvents'
 import { CommandPalette } from './CommandPalette'
 
@@ -48,6 +48,7 @@ function storedWidth(): number {
 
 export function App() {
   const [sessions, setSessions] = useState<Session[]>([])
+  const [folders, setFolders] = useState<Folder[]>([])
   const [selected, setSelected] = useState<string | null>(() =>
     localStorage.getItem(LAST_SESSION_KEY),
   )
@@ -76,8 +77,12 @@ export function App() {
 
   const refresh = useCallback(async () => {
     try {
-      const list = await api.list()
+      // Las dos listas van juntas: pedirlas por separado deja un instante en
+      // el que una sesión ya apunta a un folder que el cliente todavía no
+      // tiene, y esa sesión aparecería como suelta y saltaría de lugar.
+      const [list, fs] = await Promise.all([api.list(), api.folders.list()])
       setSessions(list)
+      setFolders(fs)
       setError(null)
       // Si la sesión elegida ya no existe (la borramos, o es de otra máquina),
       // caemos a la primera de la lista.
@@ -98,7 +103,7 @@ export function App() {
           setResourceTick((t) => t + 1)
           return
         }
-        if (ev.kind.startsWith('session.')) void refresh()
+        if (ev.kind.startsWith('session.') || ev.kind.startsWith('folder.')) void refresh()
         if (ev.kind.startsWith('resource.') && ev.session_id === selectedRef.current) {
           setResourceTick((t) => t + 1)
         }
@@ -227,6 +232,27 @@ export function App() {
       if (selectedRef.current === id) setSelected(null)
     })
 
+  const move = (sessionId: string, folderId: string | null) =>
+    run(() => api.folders.setSession(sessionId, folderId))
+
+  // Crear y mover en un paso: un folder vacío no le sirve a nadie, y este es
+  // el momento real en que uno lo necesita.
+  const createFolderAndMove = (sessionId: string, name: string) =>
+    run(async () => {
+      const f = await api.folders.create(name)
+      await api.folders.setSession(sessionId, f.id)
+    })
+
+  const deleteFolder = (id: string) =>
+    run(async () => {
+      const f = folders.find((x) => x.id === id)
+      const nombre = f ? ` ${f.name}` : ''
+      if (!confirm(`¿Borrar el folder${nombre}? Las sesiones no se borran: quedan sin proyecto.`)) {
+        return
+      }
+      await api.folders.remove(id)
+    })
+
   const current = sessions.find((s) => s.id === selected) ?? null
 
   return (
@@ -263,6 +289,11 @@ export function App() {
             onRestart={(id) => run(() => api.restart(id, 80, 24))}
             onDelete={remove}
             onCollapse={() => setCollapsed(true)}
+            folders={folders}
+            onMove={move}
+            onCreateFolderAndMove={createFolderAndMove}
+            onRenameFolder={(id, name) => run(() => api.folders.rename(id, name))}
+            onDeleteFolder={deleteFolder}
           />
         )}
 
