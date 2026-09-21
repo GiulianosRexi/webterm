@@ -15,9 +15,11 @@ function relative(ms: number): string {
 
 const COLLAPSED_KEY = 'webterm.foldersCollapsed'
 
-// SIN_FOLDER identifica al grupo de las sesiones sueltas. No es un folder real
-// —en la base eso es folder_id NULL— pero necesita una clave propia para el
-// estado de colapso.
+// SIN_FOLDER es la clave del grupo de sesiones sueltas. No se dibuja como un
+// folder: en la base eso es folder_id NULL, no la pertenencia a un folder
+// llamado "sin folder", y darle encabezado prometía cosas que no puede hacer
+// —renombrarlo, borrarlo, colapsarlo. Van al final y sin indentar, como los
+// archivos sueltos de un explorador.
 const SIN_FOLDER = '__sin_folder__'
 
 interface Grupo {
@@ -33,9 +35,13 @@ interface Grupo {
  * verse igual que antes de que existieran, que es como va a estar la primera
  * vez que alguien la abra.
  *
- * Con folders van todos, en el orden que trae el backend (alfabético), y las
- * sueltas al final. Un folder vacío se muestra igual: es la única señal de que
- * existe, y esconderlo haría que crear uno no tuviera efecto visible.
+ * Con folders van todos primero, en el orden que trae el backend (alfabético),
+ * y las sueltas al final sin encabezado. El orden importa: las sesiones nacen
+ * sueltas, así que ponerlas arriba empujaría los folders hacia abajo cada vez
+ * que se crea una.
+ *
+ * Un folder vacío se muestra igual: es la única señal de que existe, y
+ * esconderlo haría que crear uno no tuviera efecto visible.
  */
 function agrupar(sessions: Session[], folders: Folder[]): Grupo[] {
   if (folders.length === 0) {
@@ -159,7 +165,7 @@ export function SessionList({
       const items: MenuItem[] = [
         { label: '‹ volver', onClick: () => setMenu({ ...estado, moving: false }) },
         {
-          label: 'Sin proyecto',
+          label: 'Ninguno',
           current: !s.folder_id,
           separated: true,
           onClick: () => {
@@ -234,10 +240,12 @@ export function SessionList({
     return items
   }
 
-  const renderSesion = (s: Session) => (
+  const renderSesion = (s: Session, enFolder: boolean) => (
     <li
       key={s.id}
-      className={'session' + (s.id === selectedId ? ' selected' : '')}
+      className={
+        'session' + (s.id === selectedId ? ' selected' : '') + (enFolder ? ' en-folder' : '')
+      }
       onClick={() => onSelect(s.id)}
       onContextMenu={(e) => {
         e.preventDefault()
@@ -317,19 +325,19 @@ export function SessionList({
 
         {grupos.map((g) => (
           <Fragment key={g.key}>
-            {/* Sin folders no hay encabezados y la lista se ve como siempre. */}
-            {folders.length > 0 && (
+            {/* Solo los folders de verdad llevan encabezado. Las sueltas van
+                al final, sin título y sin indentar. */}
+            {g.folder && (
               <li
                 className="folder-head"
                 onClick={() => toggle(g.key)}
                 onContextMenu={(e) => {
-                  if (!g.folder) return
                   e.preventDefault()
-                  setMenu({ kind: 'folder', id: g.folder.id, x: e.clientX, y: e.clientY })
+                  setMenu({ kind: 'folder', id: g.folder!.id, x: e.clientX, y: e.clientY })
                 }}
               >
                 <span className="caret">{collapsed[g.key] ? '▸' : '▾'}</span>
-                {editing === g.key && g.folder ? (
+                {editing === g.key ? (
                   <input
                     className="rename"
                     autoFocus
@@ -349,21 +357,20 @@ export function SessionList({
                     // doble click para renombrar cerraría el grupo.
                     onClick={(e) => e.stopPropagation()}
                     onDoubleClick={(e) => {
-                      if (!g.folder) return
                       e.stopPropagation()
                       setEditing(g.key)
-                      setDraft(g.folder.name)
+                      setDraft(g.folder!.name)
                     }}
-                    title={g.folder ? 'doble click para renombrar' : 'sesiones sin proyecto'}
+                    title="doble click para renombrar"
                   >
-                    {g.folder ? g.folder.name : 'Sin proyecto'}
+                    {g.folder!.name}
                   </span>
                 )}
                 <span className="folder-count">{g.sessions.length}</span>
               </li>
             )}
 
-            {!collapsed[g.key] && g.sessions.map(renderSesion)}
+            {!collapsed[g.key] && g.sessions.map((s) => renderSesion(s, g.folder !== null))}
           </Fragment>
         ))}
       </ul>
@@ -417,7 +424,7 @@ export function SessionList({
           <input
             autoFocus
             value={nuevoFolder}
-            placeholder="Nombre del proyecto"
+            placeholder="Nombre del folder"
             onChange={(e) => setNuevoFolder(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Escape') setNuevoFolder(null)

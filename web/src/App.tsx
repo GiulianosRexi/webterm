@@ -247,7 +247,7 @@ export function App() {
     run(async () => {
       const f = folders.find((x) => x.id === id)
       const nombre = f ? ` ${f.name}` : ''
-      if (!confirm(`¿Borrar el folder${nombre}? Las sesiones no se borran: quedan sin proyecto.`)) {
+      if (!confirm(`¿Borrar el folder${nombre}? Las sesiones no se borran: quedan fuera de todo folder.`)) {
         return
       }
       await api.folders.remove(id)

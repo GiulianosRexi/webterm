@@ -686,10 +686,18 @@ body.resizing .terminal-host { pointer-events: none; }
 
 .folder-head:hover { background: rgba(255, 255, 255, 0.04); }
 
+/* El triángulo es chico pero tiene que leerse como un triángulo: a 9px se veía
+   como un punto. El ancho fijo lo mantiene alineado entre un folder abierto y
+   uno cerrado, que usan glifos de distinto ancho. */
 .folder-head .caret {
-  flex: 0 0 10px;
-  font-size: 9px;
+  flex: 0 0 12px;
+  font-size: 11px;
+  line-height: 1;
+  text-align: center;
+  opacity: 0.8;
 }
+
+.folder-head:hover .caret { opacity: 1; }
 
 .folder-name {
   flex: 1 1 auto;
@@ -708,10 +716,10 @@ body.resizing .terminal-host { pointer-events: none; }
   color: var(--fg-dim);
 }
 
-/* Las sesiones de un folder van indentadas hasta la altura de su nombre, para
-   que se lea a qué grupo pertenecen sin tener que seguir una línea. */
-.folder-head + .session,
-.folder-head + .session ~ .session {
+/* Solo se indenta lo que está adentro de un folder. Las sueltas quedan al ras,
+   como los archivos en la raíz de un explorador: la sangría es lo que dice qué
+   está adentro de qué, sin necesidad de un encabezado que las agrupe. */
+.session.en-folder {
   margin-left: 16px;
 }
 
