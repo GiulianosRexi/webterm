@@ -89,13 +89,23 @@ button,
 button:hover,
 .button:hover { border-color: var(--fg-dim); }
 
+/* overflow: hidden porque xterm dimensiona su pantalla en filas enteras y
+   puede quedar unos píxeles más alta que el hueco. Sin esto ese sobrante
+   empuja el documento y aparece un scroll de página que corta el topbar —y
+   como el desborde no cambia el tamaño del host, el ResizeObserver que
+   reajusta el terminal ni se entera y el scroll queda pegado. El scroll real
+   del historial lo maneja xterm adentro, en su propio viewport. */
 .terminal-host {
   flex: 1 1 auto;
   min-height: 0;
+  overflow: hidden;
   padding: 6px 0 6px 8px;
 }
 
-.terminal-host .xterm { height: 100%; }
+/* Sin height: 100%. El terminal mide filas enteras, así que forzarlo al alto
+   del hueco lo hacía pelear contra su propio redondeo: quedaba unos píxeles
+   más alto y la última fila salía cortada. Ahora ocupa lo que ocupan sus
+   filas y el resto queda vacío, que con este fondo es invisible. */
 
 .status[data-state="readonly"] .dot { background: var(--warn); }
 .status[data-state="starting"] .dot { background: var(--warn); }

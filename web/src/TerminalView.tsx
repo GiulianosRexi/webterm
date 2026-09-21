@@ -1,6 +1,5 @@
 import { useEffect, useRef } from 'react'
 import { Terminal } from '@xterm/xterm'
-import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 
@@ -57,12 +56,52 @@ export function TerminalView({
       customGlyphs: true,
       rescaleOverlappingGlyphs: true,
     })
-    const fit = new FitAddon()
-    term.loadAddon(fit)
     term.loadAddon(new WebLinksAddon())
     term.open(host)
     loadWebgl(term)
-    fit.fit()
+
+    // fitTerminal ajusta la grilla al hueco disponible.
+    //
+    // El tamaño de celda no se recalcula: se deduce de lo que el render está
+    // mostrando en este momento, dividiendo lo que mide la pantalla por las
+    // filas y columnas que tiene. Así vale con cualquier fuente, zoom o
+    // devicePixelRatio —que es justo donde la cuenta del addon de fit se
+    // desviaba y dejaba la última fila cortada— y no hay ningún valor fijo
+    // que envejezca.
+    const fitTerminal = () => {
+      const screen = host.querySelector<HTMLElement>('.xterm-screen')
+      if (!screen || term.rows < 1 || term.cols < 1) return
+
+      const cellH = screen.offsetHeight / term.rows
+      const cellW = screen.offsetWidth / term.cols
+      if (!(cellH > 0) || !(cellW > 0)) return
+
+      const cs = getComputedStyle(host)
+      let availH = host.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom)
+      let availW = host.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight)
+
+      // La barra de scroll del historial se lleva ancho del área de texto. Se
+      // mide en vez de asumirse: cambia según el SO y la preferencia de
+      // "mostrar barras de desplazamiento".
+      const viewport = host.querySelector<HTMLElement>('.xterm-viewport')
+      if (viewport) availW -= viewport.offsetWidth - viewport.clientWidth
+
+      const rows = Math.max(1, Math.floor(availH / cellH))
+      const cols = Math.max(1, Math.floor(availW / cellW))
+
+      // Redibujar solo cuando cambia la grilla. Arrastrando un borde, la
+      // enorme mayoría de los frames no cambia ni filas ni columnas, y
+      // resizear igual hacía parpadear la pantalla entera.
+      if (rows !== term.rows || cols !== term.cols) term.resize(cols, rows)
+    }
+
+    fitTerminal()
+    // El primer fit mide un hueco que todavía no es el definitivo: el panel de
+    // recursos monta junto con esto y después le come unos 30px de alto. Como
+    // el terminal se pasa de alto sin cambiar el tamaño de su contenedor, el
+    // ResizeObserver de abajo no llega a enterarse, así que el reajuste se
+    // repite una vez pasado el layout.
+    const settle = requestAnimationFrame(() => requestAnimationFrame(fitTerminal))
     // La terminal recién montada toma el foco: se cambia de sesión para
     // escribir en ella, y además el buscador la remonta al saltar a otra, con
     // lo cual el textarea que tenía el foco deja de existir.
@@ -113,7 +152,7 @@ export function TerminalView({
           // lado al que mandarle nuestro tamaño.
           onStateRef.current(live ? 'open' : ptyStatus === 'starting' ? 'starting' : 'readonly')
           if (live) {
-            fit.fit()
+            fitTerminal()
             sendResize()
             term.focus()
           }
@@ -143,17 +182,27 @@ export function TerminalView({
       if (live) sendResize()
     })
 
-    // El fit real depende del layout, así que lo reintentamos en cada cambio
-    // de tamaño del contenedor (ventana, sidebar, zoom del browser).
-    let raf = 0
+    // El ajuste se rehace ante cualquier cambio de tamaño del contenedor
+    // (ventana, sidebar, zoom del browser), pero recién cuando el cambio se
+    // detiene: arrastrando un borde llegan decenas de eventos por segundo, y
+    // cada cambio de grilla obliga al terminal a reflowear el historial
+    // entero. Con la espera se hace un solo reflow al soltar en vez de uno por
+    // cada tamaño intermedio.
+    //
+    // El precio es que durante el arrastre el contenido queda quieto mientras
+    // el hueco cambia. Se nota sobre todo al achicar, donde las líneas largas
+    // se ven cortadas hasta que uno suelta.
+    const RESIZE_QUIET_MS = 120
+    let quiet = 0
     const observer = new ResizeObserver(() => {
-      cancelAnimationFrame(raf)
-      raf = requestAnimationFrame(() => fit.fit())
+      clearTimeout(quiet)
+      quiet = window.setTimeout(fitTerminal, RESIZE_QUIET_MS)
     })
     observer.observe(host)
 
     return () => {
-      cancelAnimationFrame(raf)
+      cancelAnimationFrame(settle)
+      clearTimeout(quiet)
       observer.disconnect()
       dataSub.dispose()
       resizeSub.dispose()
