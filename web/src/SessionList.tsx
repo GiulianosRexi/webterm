@@ -131,6 +131,10 @@ export function SessionList({
   const [menu, setMenu] = useState<MenuState | null>(null)
   // Nombre del folder nuevo mientras se escribe, o null si no se está creando.
   const [nuevoFolder, setNuevoFolder] = useState<string | null>(null)
+  // id de la sesión que se está arrastrando, y folder sobre el que está
+  // parada. null en dropTarget significa "fuera de todo folder".
+  const [dragging, setDragging] = useState<string | null>(null)
+  const [dropTarget, setDropTarget] = useState<string | null | undefined>(undefined)
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => {
     try {
       return JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? '{}') as Record<string, boolean>
@@ -168,6 +172,35 @@ export function SessionList({
   }
 
   const toggle = (key: string) => setCollapsed((c) => ({ ...c, [key]: !c[key] }))
+
+  const terminarDrag = () => {
+    setDragging(null)
+    setDropTarget(undefined)
+  }
+
+  // Un destino de drop. folderId null es "sacarla de su folder".
+  const destino = (folderId: string | null) => ({
+    onDragOver: (e: React.DragEvent) => {
+      if (!dragging) return
+      // preventDefault es lo que marca al elemento como destino válido: sin
+      // esto el navegador rechaza el drop y muestra el cursor de prohibido.
+      e.preventDefault()
+      e.dataTransfer.dropEffect = 'move'
+      setDropTarget(folderId)
+    },
+    onDragLeave: () => setDropTarget((actual) => (actual === folderId ? undefined : actual)),
+    onDrop: (e: React.DragEvent) => {
+      e.preventDefault()
+      const id = e.dataTransfer.getData('text/plain') || dragging
+      terminarDrag()
+      if (!id) return
+      const sesion = sessions.find((x) => x.id === id)
+      // Soltarla donde ya está no es un error, pero tampoco vale un request.
+      if (sesion && (sesion.folder_id ?? null) !== folderId) onMove(id, folderId)
+    },
+  })
+
+  const arrastrando = dragging ? (sessions.find((s) => s.id === dragging) ?? null) : null
 
   // Al renombrar, el grupo queda expandido. Hace falta porque el primer click
   // del doble click llega al encabezado y lo colapsa: sin esto, renombrar un
@@ -261,12 +294,29 @@ export function SessionList({
     return items
   }
 
-  const renderSesion = (s: Session, enFolder: boolean) => (
+  const renderSesion = (s: Session, folderID: string | null) => {
+    const enFolder = folderID !== null
+    return (
     <li
       key={s.id}
       className={
-        'session' + (s.id === selectedId ? ' selected' : '') + (enFolder ? ' en-folder' : '')
+        'session' +
+        (s.id === selectedId ? ' selected' : '') +
+        (enFolder ? ' en-folder' : '') +
+        (dragging === s.id ? ' dragging' : '')
       }
+      // Mientras se renombra no: arrastrar se comería la selección de texto
+      // dentro del input.
+      draggable={editing !== s.id}
+      onDragStart={(e) => {
+        e.dataTransfer.setData('text/plain', s.id)
+        e.dataTransfer.effectAllowed = 'move'
+        setDragging(s.id)
+      }}
+      onDragEnd={terminarDrag}
+      // Soltar sobre una fila vale como soltar en su folder: así el blanco es
+      // el grupo entero y no una franja de 32px.
+      {...destino(folderID)}
       onClick={() => onSelect(s.id)}
       onContextMenu={(e) => {
         e.preventDefault()
@@ -320,7 +370,8 @@ export function SessionList({
         </button>
       </span>
     </li>
-  )
+    )
+  }
 
   const sesionDelMenu =
     menu?.kind === 'session' ? (sessions.find((s) => s.id === menu.id) ?? null) : null
@@ -344,7 +395,7 @@ export function SessionList({
         </button>
       </div>
 
-      <ul className="session-list">
+      <ul className={'session-list' + (dragging ? ' arrastrando' : '')}>
         {sessions.length === 0 && folders.length === 0 && (
           <li className="empty">todavía no hay ninguna</li>
         )}
@@ -355,7 +406,8 @@ export function SessionList({
                 al final, sin título y sin indentar. */}
             {g.folder && (
               <li
-                className="folder-head"
+                className={'folder-head' + (dropTarget === g.folder.id ? ' drop-target' : '')}
+                {...destino(g.folder.id)}
                 onClick={() => toggle(g.key)}
                 onContextMenu={(e) => {
                   e.preventDefault()
@@ -394,9 +446,23 @@ export function SessionList({
               </li>
             )}
 
-            {!collapsed[g.key] && g.sessions.map((s) => renderSesion(s, g.folder !== null))}
+            {!collapsed[g.key] &&
+              g.sessions.map((s) => renderSesion(s, g.folder ? g.folder.id : null))}
           </Fragment>
         ))}
+
+        {/* Sacar una sesión de su folder necesita un destino, y las sueltas no
+            tienen encabezado donde soltarla. Esta franja aparece solo durante
+            el arrastre, y solo si la sesión está en un folder: si ya está
+            suelta no hay nada que sacar. */}
+        {arrastrando?.folder_id && (
+          <li
+            className={'drop-fuera' + (dropTarget === null ? ' drop-target' : '')}
+            {...destino(null)}
+          >
+            Sacar del folder
+          </li>
+        )}
       </ul>
 
       {menu && sesionDelMenu && (
