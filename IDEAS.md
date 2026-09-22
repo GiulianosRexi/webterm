@@ -49,6 +49,16 @@ Cuando una idea se vuelve trabajo concreto, su diseño va a
       sesión y le habla al backend, para que los programas de ahí adentro
       puedan leer y escribir su propio estado. Era M5.
 
+- [ ] **Crear sesiones desde el MCP.** Hoy las ocho tools tocan datos: leen y
+      escriben metadata, KV, recursos y folders. Crear es distinto en
+      naturaleza —no es escribir una fila, es pedirle al daemon que levante un
+      pty—, y por eso la interfaz `Sessions` del MCP ni siquiera expone
+      `Create`: existe así para poder probar las tools sin levantar procesos.
+      Abrirlo pide decidir quién elige el `cwd`, si la sesión nace dentro de un
+      folder, y si Claude puede crear sesiones sin que el usuario lo vea o hace
+      falta alguna confirmación. El criterio que rige hoy es que borrar y crear
+      son decisiones humanas y la UI ya las tiene.
+
 - [ ] **Hooks de Claude Code.** Que `work_status` se mueva solo —idle,
       trabajando, esperando input, error— en vez de a mano. Era M6.
 
