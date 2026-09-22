@@ -242,9 +242,10 @@ type moveSessionArgs struct {
 func (s *Server) registerFolderTools() {
 	sdk.AddTool(s.mcp, &sdk.Tool{
 		Name: "list_folders",
-		Description: "Lista los folders de WebTerm con cuántas sesiones tiene cada uno. " +
-			"Conviene llamarla antes de crear uno: así se reusa el que ya existe en vez " +
-			"de crear un duplicado con otro nombre.",
+		Description: "Lista los folders de WebTerm con cuántas sesiones tiene cada uno, y " +
+			"marca en cuál está la sesión en la que estás corriendo. Conviene llamarla " +
+			"antes de crear o mover: así se reusa el folder que ya existe en vez de " +
+			"crear un duplicado con otro nombre.",
 	}, s.listFolders)
 
 	sdk.AddTool(s.mcp, &sdk.Tool{
@@ -261,7 +262,7 @@ func (s *Server) registerFolderTools() {
 	}, s.moveSession)
 }
 
-func (s *Server) listFolders(_ context.Context, _ *sdk.CallToolRequest, _ listFoldersArgs) (*sdk.CallToolResult, any, error) {
+func (s *Server) listFolders(_ context.Context, req *sdk.CallToolRequest, _ listFoldersArgs) (*sdk.CallToolResult, any, error) {
 	folders, err := s.sessions.ListFolders()
 	if err != nil {
 		return nil, nil, err
@@ -274,18 +275,47 @@ func (s *Server) listFolders(_ context.Context, _ *sdk.CallToolRequest, _ listFo
 	if err != nil {
 		return nil, nil, err
 	}
-	cuenta := map[string]int{}
+	counts := map[string]int{}
 	for _, sess := range sessions {
 		if sess.FolderID != nil {
-			cuenta[*sess.FolderID]++
+			counts[*sess.FolderID]++
+		}
+	}
+
+	// En qué folder está la sesión que llama. Sin esto la tool no puede
+	// contestar "¿dónde estoy?", que es lo primero que hay que saber para
+	// decidir si mover algo —y el motivo por el que esta tool existe es
+	// justamente que el modelo vea el estado antes de actuar.
+	callerFolder := ""
+	if id, rerr := s.resolve(req); rerr == nil {
+		for _, sess := range sessions {
+			if sess.ID == id && sess.FolderID != nil {
+				callerFolder = *sess.FolderID
+			}
 		}
 	}
 
 	var b strings.Builder
 	for _, f := range folders {
-		fmt.Fprintf(&b, "%s (id %s): %d sesiones\n", f.Name, f.ID, cuenta[f.ID])
+		fmt.Fprintf(&b, "%s (id %s): %s", f.Name, f.ID, pluralize(counts[f.ID], "sesión", "sesiones"))
+		if f.ID == callerFolder {
+			b.WriteString("  <- esta sesión está acá")
+		}
+		b.WriteString("\n")
+	}
+	if callerFolder == "" {
+		b.WriteString("esta sesión no está en ningún folder\n")
 	}
 	return text("%s", strings.TrimRight(b.String(), "\n")), nil, nil
+}
+
+// pluralize arma "1 sesión" / "2 sesiones". Existe porque el texto lo lee un
+// modelo y después se lo repite al usuario: "1 sesiones" se propaga.
+func pluralize(n int, one, many string) string {
+	if n == 1 {
+		return fmt.Sprintf("1 %s", one)
+	}
+	return fmt.Sprintf("%d %s", n, many)
 }
 
 func (s *Server) createFolder(_ context.Context, _ *sdk.CallToolRequest, args createFolderArgs) (*sdk.CallToolResult, any, error) {

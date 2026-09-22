@@ -322,10 +322,36 @@ func TestListFoldersCuentaSesiones(t *testing.T) {
 		t.Fatalf("list_folders: %v", err)
 	}
 	got := soloTexto(t, res)
-	for _, quiero := range []string{"Iceberg", "f1", "1 sesiones", "webterm", "0 sesiones"} {
+	// "1 sesión" y no "1 sesiones": el texto lo lee un modelo que después se lo
+	// repite al usuario, así que un plural mal conjugado se propaga.
+	for _, quiero := range []string{"Iceberg", "f1", "1 sesión", "webterm", "0 sesiones"} {
 		if !strings.Contains(got, quiero) {
 			t.Errorf("falta %q en:\n%s", quiero, got)
 		}
+	}
+	// s1 está en Iceberg, así que la tool tiene que decir dónde está parada.
+	if !strings.Contains(got, "esta sesión está acá") {
+		t.Errorf("no marca el folder de la sesión que llama:\n%s", got)
+	}
+}
+
+// Sin esto la tool no puede contestar "¿en qué folder estoy?", que es lo
+// primero que hay que saber antes de decidir si mover algo.
+func TestListFoldersAvisaCuandoLaSesionNoEstaEnNinguno(t *testing.T) {
+	f := nuevasSesiones()
+	f.folders = []*store.Folder{{ID: "f1", Name: "Iceberg"}}
+	s := New(f)
+
+	res, _, err := s.listFolders(context.Background(), reqCon("s1"), listFoldersArgs{})
+	if err != nil {
+		t.Fatalf("list_folders: %v", err)
+	}
+	got := soloTexto(t, res)
+	if !strings.Contains(got, "no está en ningún folder") {
+		t.Errorf("no avisa que la sesión está suelta:\n%s", got)
+	}
+	if strings.Contains(got, "esta sesión está acá") {
+		t.Errorf("marca un folder que no es el suyo:\n%s", got)
 	}
 }
 
