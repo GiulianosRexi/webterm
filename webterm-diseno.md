@@ -119,10 +119,13 @@ mecanismos de reconciliación— está en
 
 ### M4 — Organización: folders
 
-- Agrupar sesiones en folders/carpetas para ordenarlas (por proyecto, por
-  tipo de trabajo, etc.).
-- Esto es un cambio principalmente de modelo de datos (sesión → folder) y de
-  UI (árbol o sidebar de navegación), no de la capa de transporte.
+**Hecho.** El diseño detallado está en
+`docs/superpowers/specs/2026-09-21-folders-design.md`, y el del buscador que lo
+acompaña en `docs/superpowers/specs/2026-09-21-command-palette-design.md`.
+
+Quedó en un solo nivel: un folder es un proyecto y los proyectos no se anidan.
+El corte por tipo de trabajo —lo que acá se llamaba "por tipo"— no son folders
+sino tags, que siguen pendientes y están en `IDEAS.md`.
 
 ### M5 — Interfaz local (`webterm` CLI)
 

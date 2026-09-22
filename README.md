@@ -7,7 +7,7 @@ una UI web. Backend en Go (pty real vía `creack/pty`), frontend React plano con
 El diseño completo y el roadmap por milestones están en
 [`webterm-diseno.md`](./webterm-diseno.md).
 
-## Estado: M10
+## Estado
 
 - [x] **M1** — terminal web básica: un pty por conexión WebSocket, input/output,
       resize, true color, mouse.
@@ -15,13 +15,12 @@ El diseño completo y el roadmap por milestones están en
 - [x] **M8** — recursos externos linkeados a una sesión (PRs de GitHub).
 - [x] **M9** — servidor MCP para que Claude escriba en su sesión.
 - [x] **M10** — daemon de sesiones.
-- [ ] **M3** — UI multi-terminal (tabs). ← próximo
-- [ ] **M4** — folders.
-- [ ] **M5** — CLI local `webterm`.
-- [ ] **M6** — integración con Claude Code (hooks).
-- [ ] **M7** — estado administrativo y dashboard.
+- [x] **M4** — folders.
 
-Los números son ids estables, no orden de ejecución: M8 va antes que M3.
+Los números son ids estables, no orden de ejecución: M8 fue antes que M3.
+
+Lo que falta dejó de ser una cola: las ideas pendientes están en
+[IDEAS.md](IDEAS.md), sin orden, para tomar la que convenga en cada momento.
 
 Desde M2 el pty no vive en la conexión: cerrar la pestaña solo cierra el
 socket, no el proceso. Desde M10 el pty tampoco vive en el mismo proceso que
