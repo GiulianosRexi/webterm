@@ -35,6 +35,27 @@ Cuando una idea se vuelve trabajo concreto, su diseño va a
       ciegas. Falta definir la UI —panel al lado del de recursos, algo dentro
       del menú de la sesión, o una vista aparte.
 
+- [ ] **Acciones sobre los links de la terminal.** Reconocer links con una
+      regex propia y ofrecer algo según lo que sean: un PR de GitHub, linkearlo
+      a la sesión. La acción ya existe —`POST /api/sessions/{id}/resources` y la
+      tool `link_pr`—, falta el disparador desde la terminal.
+
+      xterm lo soporta por dos caminos. El barato es pasarle un handler al
+      `WebLinksAddon` que ya está cargado (`(event, uri) => …`), que intercepta
+      el click pero deja el detector del addon, o sea solo URLs. El completo es
+      `term.registerLinkProvider()`, donde el matcher es propio: cada link
+      define `activate`, `hover`/`leave`, y decoraciones propias, así que un
+      link accionable se puede ver distinto de uno común. Ahí también entran
+      cosas que no son URLs —un `ABC-123`, una ruta de archivo, un hash de
+      commit.
+
+      Lo que hay que decidir no es técnico sino de interacción: hoy el click
+      abre el link y eso no se quiere perder. Opciones: ofrecer las acciones en
+      el hover, reservar un modificador, o menú contextual con click derecho.
+      Si se hace tooltip DOM, tiene que vivir dentro de `Terminal.element` y
+      llevar la clase `xterm-hover`, o el mouse se cae a través y activa otros
+      links.
+
 - [ ] **UI multi-terminal (tabs).** Ver más de una sesión a la vez en vez de
       cambiar de una. Era M3.
 
