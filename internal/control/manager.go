@@ -474,7 +474,15 @@ func (m *Manager) LiveCount() (int, error) {
 func (m *Manager) List() ([]*store.Session, error)             { return m.st.ListSessions() }
 func (m *Manager) Get(id string) (*store.Session, error)       { return m.st.GetSession(id) }
 func (m *Manager) ListKV(id string) (map[string]string, error) { return m.st.ListKV(id) }
-func (m *Manager) DeleteKV(id, key string) error               { return m.st.DeleteKV(id, key) }
+
+func (m *Manager) DeleteKV(id, key string) error {
+	if err := m.st.DeleteKV(id, key); err != nil {
+		// Borrar una clave que no estaba no cambió nada: no vale un evento.
+		return err
+	}
+	m.publish(events.ContextRemoved, id)
+	return nil
+}
 
 func (m *Manager) UpdateMeta(id string, p store.MetaPatch) (*store.Session, error) {
 	if err := m.st.UpdateMeta(id, p); err != nil {
@@ -492,7 +500,11 @@ func (m *Manager) SetKV(id, key, value string) error {
 	if _, err := m.st.GetSession(id); err != nil {
 		return err
 	}
-	return m.st.SetKV(id, key, value)
+	if err := m.st.SetKV(id, key, value); err != nil {
+		return err
+	}
+	m.publish(events.ContextUpdated, id)
+	return nil
 }
 
 // LinkedResource es un recurso linkeado junto con su estado actual.

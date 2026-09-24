@@ -8,7 +8,7 @@ import {
 } from 'react'
 import { TerminalView, type ConnState } from './TerminalView'
 import { SessionList } from './SessionList'
-import { ResourcePanel } from './ResourcePanel'
+import { RightPanel } from './RightPanel'
 import { api, type Folder, type Session } from './api'
 import { useEvents, type ServerEvent } from './useEvents'
 import { CommandPalette } from './CommandPalette'
@@ -57,9 +57,9 @@ export function App() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [auth, setAuth] = useState(false)
-  // Un contador en vez de un booleano: lo que le importa a ResourcePanel es que
-  // cambió, no qué valor tiene.
-  const [resourceTick, setResourceTick] = useState(0)
+  // Un contador en vez de un booleano: lo que le importa al panel derecho es que
+  // algo suyo cambió (un recurso o el contexto), no qué valor tiene.
+  const [panelTick, setPanelTick] = useState(0)
   const [sidebarWidth, setSidebarWidth] = useState(storedWidth)
   const [paletteOpen, setPaletteOpen] = useState(false)
   // El handler del atajo se registra una sola vez, así que lee el estado de
@@ -101,12 +101,17 @@ export function App() {
         // null es resync: no sabemos qué nos perdimos, así que se refresca todo.
         if (!ev) {
           void refresh()
-          setResourceTick((t) => t + 1)
+          setPanelTick((t) => t + 1)
           return
         }
         if (ev.kind.startsWith('session.') || ev.kind.startsWith('folder.')) void refresh()
-        if (ev.kind.startsWith('resource.') && ev.session_id === selectedRef.current) {
-          setResourceTick((t) => t + 1)
+        // resource.* y context.* son lo que muestra el panel derecho de la
+        // sesión abierta; ambos disparan el mismo refresco.
+        if (
+          (ev.kind.startsWith('resource.') || ev.kind.startsWith('context.')) &&
+          ev.session_id === selectedRef.current
+        ) {
+          setPanelTick((t) => t + 1)
         }
       },
       [refresh],
@@ -325,18 +330,19 @@ export function App() {
         )}
         <main className="main">
           {selected ? (
-            <>
-              <ResourcePanel key={'res-' + selected} sessionId={selected} reloadKey={resourceTick} />
-              {/* key fuerza un remount al cambiar de sesión: cada una tiene su
-                  propio xterm y su propio socket. */}
-              <TerminalView key={selected} sessionId={selected} onState={setState} />
-            </>
+            // key fuerza un remount al cambiar de sesión: cada una tiene su
+            // propio xterm y su propio socket.
+            <TerminalView key={selected} sessionId={selected} onState={setState} />
           ) : (
             <div className="placeholder">
               No hay ninguna sesión abierta. Creá una con <b>+ Nueva</b>.
             </div>
           )}
         </main>
+
+        {selected && (
+          <RightPanel key={'right-' + selected} sessionId={selected} reloadKey={panelTick} />
+        )}
       </div>
 
       {paletteOpen && (

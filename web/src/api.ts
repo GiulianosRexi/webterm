@@ -91,6 +91,23 @@ export const api = {
         body: JSON.stringify({ folder_id: folderId }),
       }),
   },
+  // El contexto persistido de una sesión: el key/value que Claude escribe por
+  // MCP (set_context) y que la UI ahora también deja ver y editar. list devuelve
+  // el objeto plano {clave: valor}. set manda el valor crudo en el body porque
+  // así lo espera el handler (más cómodo que envolverlo en JSON).
+  kv: {
+    list: (sessionId: string) =>
+      req<Record<string, string>>(`/api/sessions/${sessionId}/kv`),
+    set: (sessionId: string, key: string, value: string) =>
+      req<void>(`/api/sessions/${sessionId}/kv/${encodeURIComponent(key)}`, {
+        method: 'PUT',
+        body: value,
+      }),
+    remove: (sessionId: string, key: string) =>
+      req<void>(`/api/sessions/${sessionId}/kv/${encodeURIComponent(key)}`, {
+        method: 'DELETE',
+      }),
+  },
   resources: {
     list: (sessionId: string) =>
       req<LinkedResource[]>(`/api/sessions/${sessionId}/resources`),

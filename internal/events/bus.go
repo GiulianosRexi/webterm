@@ -13,7 +13,11 @@ type Kind string
 const (
 	ResourceAdded   Kind = "resource.added"
 	ResourceRemoved Kind = "resource.removed"
-	SessionCreated  Kind = "session.created"
+	// Los de contexto disparan igual cuando lo escribe Claude por MCP que cuando
+	// lo edita la UI: ambos caminos pasan por Manager.SetKV/DeleteKV.
+	ContextUpdated Kind = "context.updated"
+	ContextRemoved Kind = "context.removed"
+	SessionCreated Kind = "session.created"
 	SessionUpdated  Kind = "session.updated"
 	SessionDeleted  Kind = "session.deleted"
 	// Los de folder no llevan sesión: el cliente vuelve a pedir la lista de

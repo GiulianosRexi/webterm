@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { ChevronDown, ChevronRight, X } from 'lucide-react'
+import { X } from 'lucide-react'
 import { api, type LinkedResource, type PRState } from './api'
 import {
   IconCheck,
@@ -18,14 +18,18 @@ import {
 // bajar el poll no cuesta una sola llamada extra a GitHub.
 const POLL_MS = 30000
 
-export function ResourcePanel({
+// LinksTab es el cuerpo del tab "Linkeado" dentro del panel derecho. Ya no trae
+// su propio header colapsable: quien colapsa ahora es el panel, y quien decide
+// si está a la vista es el tab activo (prop `active`).
+export function LinksTab({
   sessionId,
   reloadKey,
+  active,
 }: {
   sessionId: string
   reloadKey: number
+  active: boolean
 }) {
-  const [open, setOpen] = useState(false)
   const [items, setItems] = useState<LinkedResource[]>([])
   const [draft, setDraft] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -45,11 +49,13 @@ export function ResourcePanel({
     void refresh()
   }, [refresh, reloadKey])
 
+  // El poll solo tiene sentido con el tab a la vista: si el usuario está en
+  // Contexto o el panel está colapsado, no hay nada que refrescar.
   useEffect(() => {
-    if (!open) return
+    if (!active) return
     const t = setInterval(() => void refresh(), POLL_MS)
     return () => clearInterval(t)
-  }, [open, refresh])
+  }, [active, refresh])
 
   const link = async () => {
     const ref = draft.trim()
@@ -81,40 +87,28 @@ export function ResourcePanel({
   }
 
   return (
-    <section className="resources">
-      <button className="resources-head" onClick={() => setOpen((o) => !o)}>
-        <span className="caret">
-          {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-        </span>
-        Linkeado
-        {items.length > 0 && <span className="count">{items.length}</span>}
-      </button>
+    <div className="tab-body">
+      <div className="link-form">
+        <input
+          value={draft}
+          placeholder="URL de un PR de GitHub"
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') void link()
+          }}
+        />
+        <button onClick={() => void link()} disabled={busy || !draft.trim()}>
+          Linkear
+        </button>
+      </div>
 
-      {open && (
-        <div className="resources-body">
-          <div className="link-form">
-            <input
-              value={draft}
-              placeholder="URL de un PR de GitHub"
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') void link()
-              }}
-            />
-            <button onClick={() => void link()} disabled={busy || !draft.trim()}>
-              Linkear
-            </button>
-          </div>
+      {error && <p className="resource-error">{error}</p>}
+      {items.length === 0 && <p className="empty">nada linkeado todavía</p>}
 
-          {error && <p className="resource-error">{error}</p>}
-          {items.length === 0 && <p className="empty">nada linkeado todavía</p>}
-
-          {items.map((it) => (
-            <ResourceCard key={it.id} item={it} onUnlink={() => void unlink(it.id)} busy={busy} />
-          ))}
-        </div>
-      )}
-    </section>
+      {items.map((it) => (
+        <ResourceCard key={it.id} item={it} onUnlink={() => void unlink(it.id)} busy={busy} />
+      ))}
+    </div>
   )
 }
 
