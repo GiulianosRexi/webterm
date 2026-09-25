@@ -23,6 +23,24 @@ Cuando una idea se vuelve trabajo concreto, su diseño va a
       porque nadie recuerda en qué orden están escritos. Se arregla partiendo
       la query en palabras y exigiendo que cada una matchee por separado.
 
+- [ ] **Archivar sesiones.** Apagar el pty pero conservar la sesión: sale de
+      la lista sin borrarse. Para el trabajo terminado que no se quiere perder
+      pero tampoco seguir viendo.
+
+      **El historial no vale la pena guardarlo.** Lo que corre adentro es una
+      TUI, así que lo que quedó en el buffer no es una transcripción sino el
+      último repintado de la pantalla: secuencias de escape de algo que ya no
+      existe. Archivar es justamente el momento de tirarlo —hoy el daemon
+      guarda 1MB por sesión— y quedarse solo con el contexto (el KV), que sí
+      dice de qué se trataba.
+
+      La mecánica ya está: `Kill` apaga el pty y `Restart` lo revive, así que
+      desarchivar es reanudar. Lo que falta es el estado administrativo y su
+      UI. A decidir: si es un `kanban_status` más —el campo existe en el schema
+      sin usarse— o una columna propia; dónde se ven las archivadas (un filtro,
+      una sección aparte, solo desde el buscador); y si desarchivar reanuda el
+      pty o solo la saca del archivo y se reanuda aparte.
+
 - [ ] **Subfolders.** Solo si aparece la necesidad de dividir un proyecto
       grande. Agregar `parent_id` a `folders` es una migración aditiva más. Ojo:
       el caso que lo justificaría (frontend / backend dentro de un proyecto) lo
