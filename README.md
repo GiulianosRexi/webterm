@@ -43,6 +43,10 @@ adelante cada recompilación reusa el mismo daemon y no toca una sola sesión.
 
 ## Correr
 
+Para dejarlo instalado y corriendo de forma persistente (o para que lo haga un
+agente) ver [INSTALLATION.md](INSTALLATION.md); el ciclo de desarrollo sobre
+una instancia viva está en [DEVELOPMENT.md](DEVELOPMENT.md).
+
 Requiere Go ≥ 1.25 y Node ≥ 20.
 
 ```bash
