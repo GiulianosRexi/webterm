@@ -32,3 +32,13 @@ export function allTags(sessions: Session[]): TagCount[] {
     .map(([name, count]) => ({ name, count }))
     .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
 }
+
+// relative formatea el "hace cuánto" de la última actividad, que es lo que
+// más rápido dice cuál de todas las sesiones importa ahora.
+export function relative(ms: number): string {
+  const secs = Math.max(0, Math.round((Date.now() - ms) / 1000))
+  if (secs < 60) return 'recién'
+  if (secs < 3600) return `hace ${Math.floor(secs / 60)} min`
+  if (secs < 86400) return `hace ${Math.floor(secs / 3600)} h`
+  return `hace ${Math.floor(secs / 86400)} d`
+}

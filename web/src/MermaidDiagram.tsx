@@ -7,7 +7,25 @@ let mermaidPromise: Promise<typeof import('mermaid').default> | null = null
 
 const loadMermaid = () => {
   mermaidPromise ??= import('mermaid').then(({ default: mermaid }) => {
-    mermaid.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'strict' })
+    // El tema 'dark' de mermaid trae sus propios azules y violetas; con 'base'
+    // y variables neutras el diagrama usa los mismos grises que el panel.
+    mermaid.initialize({
+      startOnLoad: false,
+      securityLevel: 'strict',
+      theme: 'base',
+      themeVariables: {
+        darkMode: true,
+        background: '#1a1a1a',
+        fontFamily: 'ui-sans-serif, -apple-system, system-ui, sans-serif',
+        primaryColor: '#262626',
+        primaryTextColor: '#e4e4e4',
+        primaryBorderColor: '#4a4a4a',
+        secondaryColor: '#202020',
+        tertiaryColor: '#1d1d1d',
+        lineColor: '#8a8a8a',
+        textColor: '#e4e4e4',
+      },
+    })
     return mermaid
   })
   return mermaidPromise

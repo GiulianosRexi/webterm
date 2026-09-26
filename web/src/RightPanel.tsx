@@ -16,13 +16,12 @@ const COLLAPSED_KEY = 'webterm.rightCollapsed'
 const TAB_KEY = 'webterm.rightTab'
 const MARKDOWN_KEY = 'webterm.contextMarkdown'
 
-// Mismo criterio que la sidebar: por debajo del mínimo no entra el contenido,
-// por encima del máximo le come el ancho al terminal.
+// Por debajo del mínimo no entra el contenido. Máximo no tiene: a veces el
+// contexto importa más que el terminal, y el doble click lo devuelve al default.
 const MIN = 220
-const MAX = 560
 const DEFAULT = 340
 
-const clampWidth = (px: number) => Math.min(MAX, Math.max(MIN, px))
+const clampWidth = (px: number) => Math.max(MIN, px)
 
 function storedWidth(): number {
   const raw = Number(localStorage.getItem(WIDTH_KEY))
@@ -133,7 +132,6 @@ export function RightPanel({
         aria-label="Ancho del panel"
         aria-valuenow={width}
         aria-valuemin={MIN}
-        aria-valuemax={MAX}
         title="Arrastrar para redimensionar · doble click para restaurar"
       />
       <aside

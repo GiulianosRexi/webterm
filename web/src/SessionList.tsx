@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useState } from 'react'
 import type { Folder, Session } from './api'
-import { sessionLabel } from './session'
+import { relative, sessionLabel } from './session'
 import { Menu, MENU_WIDTH, type MenuItem } from './Menu'
 import {
   ChevronDown,
@@ -14,16 +14,6 @@ import {
 // Tamaño de los iconos de la sidebar. Uno solo para todos: lo que los hace
 // verse como un conjunto es que compartan caja y grosor de trazo.
 const ICON = 15
-
-// relative formatea el "hace cuánto" de la última actividad, que es lo que
-// más rápido dice cuál de todas las sesiones importa ahora.
-function relative(ms: number): string {
-  const secs = Math.max(0, Math.round((Date.now() - ms) / 1000))
-  if (secs < 60) return 'recién'
-  if (secs < 3600) return `hace ${Math.floor(secs / 60)} min`
-  if (secs < 86400) return `hace ${Math.floor(secs / 3600)} h`
-  return `hace ${Math.floor(secs / 86400)} d`
-}
 
 const COLLAPSED_KEY = 'webterm.foldersCollapsed'
 

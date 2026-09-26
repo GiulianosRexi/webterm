@@ -19,10 +19,11 @@ type ServerMsg =
   | { type: 'error'; error: string }
 
 const theme = {
-  background: '#11131a',
-  foreground: '#d6dae4',
-  cursor: '#5ac8a8',
-  selectionBackground: '#2c3446',
+  background: '#141414',
+  foreground: '#e4e4e4',
+  cursor: '#d4d4d4',
+  cursorAccent: '#141414',
+  selectionBackground: '#3a3a3a',
 }
 
 export function TerminalView({

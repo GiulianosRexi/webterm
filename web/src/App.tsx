@@ -13,9 +13,10 @@ import { RightPanel } from './RightPanel'
 import { api, type Folder, type Session } from './api'
 import { useEvents, type ServerEvent } from './useEvents'
 import { CommandPalette } from './CommandPalette'
+import { Expose } from './Expose'
 import { TagEditor } from './TagEditor'
 import { allTags } from './session'
-import { PanelLeftOpen } from 'lucide-react'
+import { LayoutGrid, PanelLeftOpen } from 'lucide-react'
 
 const label: Record<ConnState, string> = {
   connecting: 'conectando…',
@@ -69,6 +70,9 @@ export function App() {
   // acá en lugar de capturarlo en su closure —mismo patrón que selectedRef.
   const paletteOpenRef = useRef(paletteOpen)
   paletteOpenRef.current = paletteOpen
+  const [exposeOpen, setExposeOpen] = useState(false)
+  const exposeOpenRef = useRef(exposeOpen)
+  exposeOpenRef.current = exposeOpen
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1',
   )
@@ -145,6 +149,32 @@ export function App() {
       document.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea')?.focus()
     })
   }, [])
+
+  // Mismo motivo que closePalette: al volver del Exposé el foco tiene que
+  // caer en la terminal, que además puede ser otra si se eligió una sesión.
+  const closeExpose = useCallback(() => {
+    setExposeOpen(false)
+    requestAnimationFrame(() => {
+      document.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea')?.focus()
+    })
+  }, [])
+
+  // Cmd+E (Ctrl+E fuera de macOS) abre y cierra el Exposé. En captura por lo
+  // mismo que Cmd+K: si no, se la come xterm.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key.toLowerCase() !== 'e' || !(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey) return
+      e.preventDefault()
+      e.stopPropagation()
+      if (exposeOpenRef.current) closeExpose()
+      else {
+        if (paletteOpenRef.current) setPaletteOpen(false)
+        setExposeOpen(true)
+      }
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [closeExpose])
 
   // Cmd+K (Ctrl+K fuera de macOS) abre el buscador. Va en fase de captura
   // porque si no xterm se come la tecla: con el foco dentro de la terminal es
@@ -285,6 +315,14 @@ export function App() {
         </span>
         <span className="spacer" />
         {error && <span className="error">{error}</span>}
+        <button
+          className="button icon"
+          onClick={() => setExposeOpen(true)}
+          title="Ver todas las sesiones (⌘E)"
+          aria-label="Ver todas las sesiones"
+        >
+          <LayoutGrid size={14} />
+        </button>
         {auth && (
           <a className="button" href="/api/logout">
             Salir
@@ -357,6 +395,16 @@ export function App() {
           <RightPanel key={'right-' + selected} sessionId={selected} reloadKey={panelTick} />
         )}
       </div>
+
+      {exposeOpen && (
+        <Expose
+          sessions={sessions}
+          folders={folders}
+          selectedId={selected}
+          onSelect={setSelected}
+          onClose={closeExpose}
+        />
+      )}
 
       {paletteOpen && (
         <CommandPalette
