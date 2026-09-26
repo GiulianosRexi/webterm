@@ -1118,3 +1118,12 @@ pre.context-value {
   color: var(--fg-dim);
   font-size: 12px;
 }
+
+/* Diagramas mermaid dentro del contexto: el svg viene con ancho fijo, en un
+   panel angosto lo achicamos para que entre en vez de scrollear. */
+.context-value.markdown .mermaid-diagram { margin: 6px 0; }
+.context-value.markdown .mermaid-diagram svg {
+  max-width: 100%;
+  height: auto;
+}
+.context-value.markdown .mermaid-loading { color: var(--fg-dim); font-size: 11px; }

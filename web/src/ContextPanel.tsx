@@ -1,10 +1,30 @@
 import { useCallback, useEffect, useState } from 'react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import type { Components } from 'react-markdown'
 import { Check, Pencil, Plus, Trash2, X } from 'lucide-react'
 import { api } from './api'
+import { MermaidDiagram } from './MermaidDiagram'
 
 type Entry = { key: string; value: string }
+
+// Los bloques ```mermaid se dibujan; el resto del markdown queda como estaba.
+// Se reemplaza el <pre> y no el <code> para no dejar el diagrama envuelto en
+// un bloque de código.
+const markdownComponents: Components = {
+  pre({ node, children, ...props }) {
+    const code = node?.children[0]
+    if (
+      code?.type === 'element' &&
+      code.tagName === 'code' &&
+      String(code.properties.className ?? '').includes('language-mermaid')
+    ) {
+      const text = code.children.map((c) => (c.type === 'text' ? c.value : '')).join('')
+      return <MermaidDiagram source={text.replace(/\n$/, '')} />
+    }
+    return <pre {...props}>{children}</pre>
+  },
+}
 
 const toEntries = (kv: Record<string, string>): Entry[] =>
   Object.entries(kv)
@@ -165,7 +185,7 @@ function ContextCard({
       </header>
       {markdown ? (
         <div className="context-value markdown">
-          <Markdown remarkPlugins={[remarkGfm]}>{entry.value}</Markdown>
+          <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{entry.value}</Markdown>
         </div>
       ) : (
         <pre className="context-value">{entry.value}</pre>
