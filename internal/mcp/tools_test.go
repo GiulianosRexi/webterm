@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 
@@ -425,5 +427,109 @@ func TestMoveSessionAFolderInexistenteListaLosQueHay(t *testing.T) {
 	}
 	if f.existentes["s1"].FolderID != nil {
 		t.Fatal("movió la sesión igual")
+	}
+}
+
+func (f *sessionsFalsas) ListTags() ([]store.TagCount, error) {
+	counts := map[string]int{}
+	for _, s := range f.existentes {
+		for _, t := range s.Tags {
+			counts[t]++
+		}
+	}
+	names := make([]string, 0, len(counts))
+	for n := range counts {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	out := []store.TagCount{}
+	for _, n := range names {
+		out = append(out, store.TagCount{Name: n, Count: counts[n]})
+	}
+	return out, nil
+}
+
+func (f *sessionsFalsas) AddSessionTags(sessionID string, tags []string) error {
+	s, ok := f.existentes[sessionID]
+	if !ok {
+		return store.ErrNotFound
+	}
+	for _, t := range tags {
+		clean, err := store.NormalizeTag(t)
+		if err != nil {
+			return err
+		}
+		if !slices.Contains(s.Tags, clean) {
+			s.Tags = append(s.Tags, clean)
+		}
+	}
+	sort.Strings(s.Tags)
+	return nil
+}
+
+func (f *sessionsFalsas) RemoveSessionTags(sessionID string, tags []string) error {
+	s, ok := f.existentes[sessionID]
+	if !ok {
+		return store.ErrNotFound
+	}
+	for _, t := range tags {
+		clean, _ := store.NormalizeTag(t)
+		s.Tags = slices.DeleteFunc(s.Tags, func(x string) bool { return x == clean })
+	}
+	return nil
+}
+
+func TestTagSessionAgregaSacaYAvisaLosNuevos(t *testing.T) {
+	f := nuevasSesiones()
+	f.existentes["s2"] = &store.Session{ID: "s2", Tags: []string{"bugfix"}}
+	srv := New(f)
+
+	res, _, err := srv.tagSession(context.Background(), reqCon("s1"),
+		tagSessionArgs{Add: []string{"Bugfix", "Bug Fix"}})
+	if err != nil {
+		t.Fatalf("tag_session: %v", err)
+	}
+	out := soloTexto(t, res)
+	if !strings.Contains(out, "bug-fix, bugfix") {
+		t.Fatalf("no informa los tags resultantes: %q", out)
+	}
+	// bugfix ya existía; bug-fix es nuevo y casi igual: justo lo que hay que avisar.
+	if !strings.Contains(out, "tags nuevos: bug-fix") {
+		t.Fatalf("no avisa el tag nuevo: %q", out)
+	}
+
+	res, _, err = srv.tagSession(context.Background(), reqCon("s1"),
+		tagSessionArgs{Remove: []string{"bug-fix"}})
+	if err != nil {
+		t.Fatalf("tag_session: %v", err)
+	}
+	if out := soloTexto(t, res); !strings.Contains(out, "quedó con: bugfix") {
+		t.Fatalf("después de sacar: %q", out)
+	}
+}
+
+func TestTagSessionSinNadaQueHacer(t *testing.T) {
+	srv := New(nuevasSesiones())
+	if _, _, err := srv.tagSession(context.Background(), reqCon("s1"), tagSessionArgs{}); err == nil {
+		t.Fatal("esperaba error sin add ni remove")
+	}
+}
+
+func TestListTagsMarcaLosDeLaSesion(t *testing.T) {
+	f := nuevasSesiones()
+	f.existentes["s1"].Tags = []string{"bugfix"}
+	f.existentes["s2"] = &store.Session{ID: "s2", Tags: []string{"bugfix", "consulta"}}
+	srv := New(f)
+
+	res, _, err := srv.listTags(context.Background(), reqCon("s1"), listTagsArgs{})
+	if err != nil {
+		t.Fatalf("list_tags: %v", err)
+	}
+	out := soloTexto(t, res)
+	if !strings.Contains(out, "bugfix: 2 sesiones  <- esta sesión lo tiene") {
+		t.Fatalf("salida: %q", out)
+	}
+	if !strings.Contains(out, "consulta: 1 sesión") || strings.Contains(out, "consulta: 1 sesión  <-") {
+		t.Fatalf("salida: %q", out)
 	}
 }

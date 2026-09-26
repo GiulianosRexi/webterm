@@ -21,6 +21,9 @@ export interface Session {
   created_at: number
   last_active_at: number
   exited_at?: number
+  // Tipo de trabajo —bugfix, consulta, implementación—. Vienen normalizados
+  // del backend (minúsculas, guiones) y ordenados.
+  tags: string[]
 }
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
@@ -89,6 +92,16 @@ export const api = {
       req<void>(`/api/sessions/${sessionId}/folder`, {
         method: 'PUT',
         body: JSON.stringify({ folder_id: folderId }),
+      }),
+  },
+  // tags reemplaza el conjunto entero y devuelve la sesión con los tags ya
+  // normalizados. No hay endpoint para listar los existentes porque la UI ya
+  // tiene todas las sesiones: se derivan de ahí (ver allTags en session.ts).
+  tags: {
+    set: (sessionId: string, tags: string[]) =>
+      req<Session>(`/api/sessions/${sessionId}/tags`, {
+        method: 'PUT',
+        body: JSON.stringify({ tags }),
       }),
   },
   // El contexto persistido de una sesión: el key/value que Claude escribe por

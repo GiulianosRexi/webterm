@@ -9,17 +9,9 @@ Cuando una idea se vuelve trabajo concreto, su diseño va a
 
 ## Organización
 
-- [ ] **Tags por sesión.** El tipo de trabajo —bugfix, consulta,
-      implementación, brainstorming—, varios por sesión y transversales al
-      folder. Con autocompletado desde los que ya existen, porque sin eso
-      aparecen `bugfix`, `bug-fix` y `fix` como tres cosas distintas y el corte
-      por tipo deja de servir. Va con tool de MCP que liste los existentes, por
-      la misma razón. Es la fase 3 del plan de organización: folders responde
-      *de qué proyecto es* y tags *de qué clase de trabajo*.
-
 - [ ] **Buscar sin que importe el orden de las palabras.** Hoy el matcher es
       por subsecuencia: `mejoras web` encuentra, `webterm mejoras` no. Con dos
-      campos molesta poco; con tres —título, folder y tags— va a molestar,
+      campos molesta poco; con tres —título, folder y tags, que ya existen— molesta,
       porque nadie recuerda en qué orden están escritos. Se arregla partiendo
       la query en palabras y exigiendo que cada una matchee por separado.
 

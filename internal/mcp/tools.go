@@ -73,6 +73,7 @@ func (s *Server) registerTools() {
 	}, s.listLinks)
 
 	s.registerFolderTools()
+	s.registerTagTools()
 }
 
 func (s *Server) setContext(_ context.Context, req *sdk.CallToolRequest, args setContextArgs) (*sdk.CallToolResult, any, error) {

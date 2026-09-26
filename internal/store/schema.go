@@ -21,7 +21,7 @@ package store
 // daemon.ProtocolVersion y avisar que hace falta `webterm daemon restart`
 // —que mata las sesiones, y por eso es explícito—. Lo mismo está resumido en el
 // README, en "Arquitectura: daemon y orquestador".
-var migrations = []string{schemaV1, schemaV2, schemaV3}
+var migrations = []string{schemaV1, schemaV2, schemaV3, schemaV4}
 
 // schemaV1 define el modelo completo de sesión del diseño, incluidos los
 // campos que la UI de M2 todavía no usa (folder_id es M4, work_status y
@@ -106,4 +106,26 @@ CREATE TABLE folders (
 
 CREATE UNIQUE INDEX idx_folders_name ON folders(name COLLATE NOCASE);
 CREATE INDEX idx_sessions_folder ON sessions(folder_id);
+`
+
+// schemaV4 agrega los tags por sesión: el tipo de trabajo —bugfix, consulta,
+// implementación—, varios por sesión y transversales al folder.
+//
+// Tabla aparte y no una columna en sessions por dos motivos: agregar columnas a
+// sessions obliga a tocar sessionColumns, que es lo que lee el daemon; y lo que
+// hay que contestar seguido es la pregunta inversa —qué tags existen y cuánto
+// se usa cada uno, para el autocompletado—, que sobre un campo serializado
+// sería parsear todas las filas.
+//
+// Acá sí va foreign key con cascada, como en session_kv: la tabla es nueva, así
+// que no hay que recrear nada, y borrar una sesión se lleva sus tags solo. El
+// tag se guarda ya normalizado (ver NormalizeTag), por eso no hace falta NOCASE.
+const schemaV4 = `
+CREATE TABLE session_tags (
+  session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  tag        TEXT NOT NULL,
+  PRIMARY KEY (session_id, tag)
+);
+
+CREATE INDEX idx_session_tags_tag ON session_tags(tag);
 `

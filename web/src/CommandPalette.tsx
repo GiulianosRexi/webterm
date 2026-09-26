@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Folder as FolderIcon, X } from 'lucide-react'
+import { Folder as FolderIcon, Tag as TagIcon, X } from 'lucide-react'
 import type { Folder, Session } from './api'
-import { sessionLabel } from './session'
+import { allTags, sessionLabel, type TagCount } from './session'
 import { fuzzyMatch, rank, type FuzzyMatch } from './fuzzy'
 
 // Highlight parte el texto en tramos que matchearon y tramos que no, en vez de
@@ -42,8 +42,15 @@ type Item =
       // uno: las posiciones del texto concatenado no sirven para pintar.
       tituloPos: number[]
       folderPos: number[]
+      tagPos: number[][]
     }
   | { kind: 'folder'; folder: Folder; match: FuzzyMatch }
+  | { kind: 'tag'; tag: TagCount; match: FuzzyMatch }
+
+// Por qué se está acotando la búsqueda: un folder o un tag. Uno a la vez: con
+// dos chips el Backspace tendría que decidir cuál sacar, y el caso de
+// combinarlos todavía no apareció.
+type Filter = { kind: 'folder'; folder: Folder } | { kind: 'tag'; tag: string }
 
 export function CommandPalette({
   sessions,
@@ -60,22 +67,25 @@ export function CommandPalette({
 }) {
   const [query, setQuery] = useState('')
   const [active, setActive] = useState(0)
-  // Folder por el que se está acotando la búsqueda, o null.
-  const [filtro, setFiltro] = useState<Folder | null>(null)
+  const [filtro, setFiltro] = useState<Filter | null>(null)
   const listRef = useRef<HTMLUListElement>(null)
 
   const items = useMemo<Item[]>(() => {
-    const visibles = filtro ? sessions.filter((s) => s.folder_id === filtro.id) : sessions
+    const visibles = !filtro
+      ? sessions
+      : filtro.kind === 'folder'
+        ? sessions.filter((s) => s.folder_id === filtro.folder.id)
+        : sessions.filter((s) => s.tags.includes(filtro.tag))
     const folderDe = (s: Session) => folders.find((f) => f.id === s.folder_id) ?? null
 
-    // Se busca contra el título y el nombre del folder juntos: así "webterm
-    // mejoras" encuentra algo que en ningún campo está escrito completo, y
-    // buscar el nombre de un proyecto trae sus sesiones aunque no lo
-    // mencionen.
+    // Se busca contra el título, el nombre del folder y los tags juntos: así
+    // "webterm mejoras" encuentra algo que en ningún campo está escrito
+    // completo, y buscar un proyecto o un tipo de trabajo trae sus sesiones
+    // aunque el título no lo mencione.
     const out: Item[] = rank(
       query,
       visibles,
-      (s) => `${sessionLabel(s)} ${folderDe(s)?.name ?? ''}`,
+      (s) => `${sessionLabel(s)} ${folderDe(s)?.name ?? ''} ${s.tags.join(' ')}`,
     ).map((r) => {
       const folder = folderDe(r.item)
       return {
@@ -84,14 +94,21 @@ export function CommandPalette({
         folder,
         tituloPos: fuzzyMatch(query, sessionLabel(r.item))?.positions ?? [],
         folderPos: folder ? (fuzzyMatch(query, folder.name)?.positions ?? []) : [],
+        tagPos: r.item.tags.map((t) => fuzzyMatch(query, t)?.positions ?? []),
       }
     })
 
-    // Con un folder ya elegido no se ofrecen folders: la búsqueda quedó
-    // adentro de ese, y mostrar otros invitaría a saltar en vez de filtrar.
+    // Con un filtro ya elegido no se ofrecen más: la búsqueda quedó adentro
+    // de ese, y mostrar otros invitaría a saltar en vez de filtrar.
     if (!filtro) {
       for (const r of rank(query, folders, (f) => f.name)) {
         out.push({ kind: 'folder', folder: r.item, match: r.match })
+      }
+      // Los tags van alfabéticos y no por uso, igual que el resto del
+      // palette: el orden no se mueve solo entre una apertura y la siguiente.
+      const tags = allTags(sessions).sort((a, b) => a.name.localeCompare(b.name))
+      for (const r of rank(query, tags, (t) => t.name)) {
+        out.push({ kind: 'tag', tag: r.item, match: r.match })
       }
     }
     return out
@@ -106,11 +123,16 @@ export function CommandPalette({
   }, [active])
 
   const elegir = (item: Item) => {
+    // Un folder o un tag no es un destino: acota la búsqueda y deja seguir
+    // escribiendo. La query que sirvió para encontrarlo no sirve para buscar
+    // adentro, así que se limpia.
     if (item.kind === 'folder') {
-      // Un folder no es un destino: acota la búsqueda y deja seguir
-      // escribiendo. La query que sirvió para encontrarlo no sirve para buscar
-      // adentro, así que se limpia.
-      setFiltro(item.folder)
+      setFiltro({ kind: 'folder', folder: item.folder })
+      setQuery('')
+      return
+    }
+    if (item.kind === 'tag') {
+      setFiltro({ kind: 'tag', tag: item.tag.name })
       setQuery('')
       return
     }
@@ -154,6 +176,13 @@ export function CommandPalette({
   // Solo los folders llevan título: son la sección secundaria. Etiquetar
   // también las sesiones sería ruido, porque son lo que uno viene a buscar.
   const primerFolder = items.findIndex((i) => i.kind === 'folder')
+  const primerTag = items.findIndex((i) => i.kind === 'tag')
+  const itemKey = (item: Item) =>
+    item.kind === 'folder'
+      ? 'folder' + item.folder.id
+      : item.kind === 'tag'
+        ? 'tag' + item.tag.name
+        : 'session' + item.session.id
 
   return createPortal(
     <div className="palette-backdrop" onMouseDown={onClose}>
@@ -167,8 +196,8 @@ export function CommandPalette({
         <div className="palette-campo">
           {filtro && (
             <span className="palette-chip">
-              <FolderIcon size={12} />
-              {filtro.name}
+              {filtro.kind === 'folder' ? <FolderIcon size={12} /> : <TagIcon size={12} />}
+              {filtro.kind === 'folder' ? filtro.folder.name : filtro.tag}
               <button
                 onClick={() => setFiltro(null)}
                 title="Quitar el filtro"
@@ -182,7 +211,13 @@ export function CommandPalette({
             className="palette-input"
             autoFocus
             value={query}
-            placeholder={filtro ? 'Buscar en este folder…' : 'Buscar sesión o folder…'}
+            placeholder={
+              !filtro
+                ? 'Buscar sesión, folder o tag…'
+                : filtro.kind === 'folder'
+                  ? 'Buscar en este folder…'
+                  : 'Buscar con este tag…'
+            }
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={onKeyDown}
           />
@@ -192,8 +227,9 @@ export function CommandPalette({
           {items.length === 0 && <li className="palette-empty">sin resultados</li>}
 
           {items.map((item, i) => (
-            <li key={item.kind + (item.kind === 'folder' ? item.folder.id : item.session.id)}>
+            <li key={itemKey(item)}>
               {i === primerFolder && <div className="palette-seccion">Folders</div>}
+              {i === primerTag && <div className="palette-seccion">Tags</div>}
               <div
                 data-active={i === active}
                 className={
@@ -213,7 +249,12 @@ export function CommandPalette({
                     </span>
                     {/* Con un folder ya elegido el dato sobra: todas las filas
                         son de ese folder y repetirlo en cada una es ruido. */}
-                    {item.folder && !filtro && (
+                    {item.session.tags.map((t, ti) => (
+                      <span key={t} className="palette-tag">
+                        <Highlight text={t} positions={item.tagPos[ti]} />
+                      </span>
+                    ))}
+                    {item.folder && filtro?.kind !== 'folder' && (
                       <span className="palette-folder">
                         <FolderIcon size={11} />
                         <Highlight text={item.folder.name} positions={item.folderPos} />
@@ -222,6 +263,14 @@ export function CommandPalette({
                     {item.session.id === selectedId && (
                       <span className="palette-hint">actual</span>
                     )}
+                  </>
+                ) : item.kind === 'tag' ? (
+                  <>
+                    <TagIcon size={13} className="palette-icono" />
+                    <span className="palette-name">
+                      <Highlight text={item.tag.name} positions={item.match.positions} />
+                    </span>
+                    <span className="palette-hint">{item.tag.count} · filtrar</span>
                   </>
                 ) : (
                   <>

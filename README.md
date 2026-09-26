@@ -16,6 +16,7 @@ El diseño completo y el roadmap por milestones están en
 - [x] **M9** — servidor MCP para que Claude escriba en su sesión.
 - [x] **M10** — daemon de sesiones.
 - [x] **M4** — folders.
+- [x] **Tags** — el tipo de trabajo de cada sesión, con autocompletado.
 
 Los números son ids estables, no orden de ejecución: M8 fue antes que M3.
 
@@ -379,6 +380,9 @@ Tools disponibles:
 | `set_title` | nombra la sesión: es lo que se ve en la lista |
 | `link_pr` | linkea un PR de GitHub |
 | `list_links` | los recursos linkeados, con su estado |
+| `list_folders` / `create_folder` / `move_session` | los folders y en cuál está cada sesión |
+| `list_tags` | los tags en uso, con cuántas sesiones lleva cada uno |
+| `tag_session` | agrega y/o saca tags; no toca los que no nombra |
 
 Ninguna borra nada: deslinkear y borrar sesiones siguen siendo decisiones
 humanas, y la UI ya las tiene.

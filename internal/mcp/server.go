@@ -39,6 +39,9 @@ type Sessions interface {
 	ListFolders() ([]*store.Folder, error)
 	CreateFolder(name string) (*store.Folder, error)
 	SetSessionFolder(sessionID string, folderID *string) error
+	ListTags() ([]store.TagCount, error)
+	AddSessionTags(sessionID string, tags []string) error
+	RemoveSessionTags(sessionID string, tags []string) error
 }
 
 // Server es el servidor MCP de WebTerm.

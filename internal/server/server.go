@@ -72,6 +72,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/folders/{id}", s.handleDeleteFolder)
 	mux.HandleFunc("PUT /api/sessions/{id}/folder", s.handleSetSessionFolder)
 
+	mux.HandleFunc("GET /api/tags", s.handleListTags)
+	mux.HandleFunc("PUT /api/sessions/{id}/tags", s.handleSetSessionTags)
+
 	mux.HandleFunc("GET /api/sessions/{id}/resources", s.handleListResources)
 	mux.HandleFunc("POST /api/sessions/{id}/resources", s.handleLinkResource)
 	mux.HandleFunc("DELETE /api/sessions/{id}/resources/{rid}", s.handleUnlinkResource)

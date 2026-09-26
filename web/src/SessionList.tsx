@@ -349,6 +349,18 @@ export function SessionList({
           <span className="name-inner">{sessionLabel(s)}</span>
         </span>
       )}
+      {/* Los tags van apagados y después del nombre: dicen qué clase de
+          trabajo es sin competir con el título, y si no entran se cortan
+          ellos antes que el nombre. */}
+      {s.tags.length > 0 && editing !== s.id && (
+        <span className="tags" title={s.tags.join(' · ')}>
+          {s.tags.map((t) => (
+            <span key={t} className="tag">
+              {t}
+            </span>
+          ))}
+        </span>
+      )}
       <span className="when">{relative(s.last_active_at)}</span>
       {s.pty_status === 'starting' && (
         <span className="starting-hint" title="La sesión está arrancando">

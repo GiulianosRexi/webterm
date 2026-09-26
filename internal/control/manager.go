@@ -623,3 +623,35 @@ func (m *Manager) DeleteResource(sessionID string, id int64) error {
 	m.publish(events.ResourceRemoved, sessionID)
 	return nil
 }
+
+// ListTags devuelve los tags en uso con cuántas sesiones lleva cada uno.
+func (m *Manager) ListTags() ([]store.TagCount, error) { return m.st.ListTags() }
+
+// SetSessionTags reemplaza los tags de la sesión. Como con los folders, lo que
+// cambió es la sesión: el evento es session.updated, y de ahí el cliente
+// recalcula también la lista de tags existentes.
+func (m *Manager) SetSessionTags(sessionID string, tags []string) error {
+	if err := m.st.SetSessionTags(sessionID, tags); err != nil {
+		return err
+	}
+	m.publish(events.SessionUpdated, sessionID)
+	return nil
+}
+
+// AddSessionTags suma tags sin tocar los que ya tenía.
+func (m *Manager) AddSessionTags(sessionID string, tags []string) error {
+	if err := m.st.AddSessionTags(sessionID, tags); err != nil {
+		return err
+	}
+	m.publish(events.SessionUpdated, sessionID)
+	return nil
+}
+
+// RemoveSessionTags saca esos tags de la sesión.
+func (m *Manager) RemoveSessionTags(sessionID string, tags []string) error {
+	if err := m.st.RemoveSessionTags(sessionID, tags); err != nil {
+		return err
+	}
+	m.publish(events.SessionUpdated, sessionID)
+	return nil
+}

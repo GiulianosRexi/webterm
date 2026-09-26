@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type CSSProperties,
@@ -12,6 +13,8 @@ import { RightPanel } from './RightPanel'
 import { api, type Folder, type Session } from './api'
 import { useEvents, type ServerEvent } from './useEvents'
 import { CommandPalette } from './CommandPalette'
+import { TagEditor } from './TagEditor'
+import { allTags } from './session'
 import { PanelLeftOpen } from 'lucide-react'
 
 const label: Record<ConnState, string> = {
@@ -260,12 +263,22 @@ export function App() {
     })
 
   const current = sessions.find((s) => s.id === selected) ?? null
+  const knownTags = useMemo(() => allTags(sessions), [sessions])
+
+  const setTags = (id: string, tags: string[]) => run(() => api.tags.set(id, tags))
 
   return (
     <div className="app">
       <header className="topbar">
         <span className="brand">WebTerm</span>
         {current && <span className="cwd">{current.cwd}</span>}
+        {current && (
+          <TagEditor
+            tags={current.tags}
+            known={knownTags}
+            onChange={(tags) => setTags(current.id, tags)}
+          />
+        )}
         <span className="status" data-state={state}>
           <span className="dot" />
           {label[state]}

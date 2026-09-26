@@ -57,6 +57,9 @@ type Session struct {
 	CreatedAt    int64     `json:"created_at"`
 	LastActiveAt int64     `json:"last_active_at"`
 	ExitedAt     *int64    `json:"exited_at,omitempty"`
+	// Tags no es una columna de sessions sino de session_tags (ver schemaV4).
+	// Los getters la completan; CreateSession la ignora.
+	Tags []string `json:"tags"`
 }
 
 // MetaPatch es un update parcial: los campos en nil no se tocan.
@@ -166,6 +169,9 @@ func (s *Store) GetSession(id string) (*Session, error) {
 	if err != nil {
 		return nil, fmt.Errorf("leyendo sesión %s: %w", id, err)
 	}
+	if sess.Tags, err = s.sessionTags(id); err != nil {
+		return nil, err
+	}
 	return sess, nil
 }
 
@@ -185,7 +191,20 @@ func (s *Store) ListSessions() ([]*Session, error) {
 		}
 		out = append(out, sess)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	tags, err := s.allSessionTags()
+	if err != nil {
+		return nil, err
+	}
+	for _, sess := range out {
+		if sess.Tags = tags[sess.ID]; sess.Tags == nil {
+			sess.Tags = []string{}
+		}
+	}
+	return out, nil
 }
 
 // UpdateMeta aplica un update parcial sobre los campos administrativos.
