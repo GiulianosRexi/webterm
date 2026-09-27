@@ -2,6 +2,8 @@ import { Fragment, useEffect, useMemo, useState } from 'react'
 import type { Folder, Session } from './api'
 import { relative, sessionLabel, statusOf, STATUS_LABEL } from './session'
 import { StatusBadge, statusItems } from './StatusPicker'
+import { FilterMenu } from './FilterMenu'
+import { isFiltering, loadFilters, matches, saveFilters } from './filters'
 import { Menu, MENU_WIDTH, type MenuItem } from './Menu'
 import {
   ChevronDown,
@@ -149,7 +151,20 @@ export function SessionList({
     localStorage.setItem(COLLAPSED_KEY, JSON.stringify(collapsed))
   }, [collapsed])
 
-  const grupos = useMemo(() => agrupar(sessions, folders), [sessions, folders])
+  const [filters, setFilters] = useState(loadFilters)
+  useEffect(() => saveFilters(filters), [filters])
+  const filtering = isFiltering(filters)
+
+  // Con un filtro aplicado los folders que quedan vacíos se esconden: son
+  // justamente lo que el filtro vino a sacar de la vista. Sin filtro se
+  // muestran igual, por lo que explica agrupar.
+  const grupos = useMemo(() => {
+    const out = agrupar(
+      sessions.filter((s) => matches(s, filters)),
+      folders,
+    )
+    return filtering ? out.filter((g) => g.sessions.length > 0) : out
+  }, [sessions, folders, filters, filtering])
 
   const commit = (id: string) => {
     setEditing(null)
@@ -414,6 +429,7 @@ export function SessionList({
     <aside className="sidebar">
       <div className="sidebar-head">
         <span>Sesiones</span>
+        <FilterMenu filters={filters} onChange={setFilters} size={ICON} />
         <button onClick={onCreate} disabled={busy} title="Nueva sesión" aria-label="Nueva sesión">
           <Plus size={ICON} />
         </button>
@@ -430,6 +446,9 @@ export function SessionList({
       <ul className={'session-list' + (dragging ? ' arrastrando' : '')}>
         {sessions.length === 0 && folders.length === 0 && (
           <li className="empty">todavía no hay ninguna</li>
+        )}
+        {filtering && sessions.length > 0 && grupos.length === 0 && (
+          <li className="empty">ninguna sesión con estos filtros</li>
         )}
 
         {grupos.map((g) => (
