@@ -15,7 +15,8 @@ import { useEvents, type ServerEvent } from './useEvents'
 import { CommandPalette } from './CommandPalette'
 import { Expose } from './Expose'
 import { TagEditor } from './TagEditor'
-import { allTags } from './session'
+import { allTags, statusOf } from './session'
+import { StatusPicker } from './StatusPicker'
 import { LayoutGrid, PanelLeftOpen } from 'lucide-react'
 
 const label: Record<ConnState, string> = {
@@ -296,12 +297,19 @@ export function App() {
   const knownTags = useMemo(() => allTags(sessions), [sessions])
 
   const setTags = (id: string, tags: string[]) => run(() => api.tags.set(id, tags))
+  const setStatus = (id: string, status: string) => run(() => api.setStatus(id, status))
 
   return (
     <div className="app">
       <header className="topbar">
         <span className="brand">WebTerm</span>
         {current && <span className="cwd">{current.cwd}</span>}
+        {current && (
+          <StatusPicker
+            status={statusOf(current)}
+            onChange={(st) => setStatus(current.id, st)}
+          />
+        )}
         {current && (
           <TagEditor
             tags={current.tags}
@@ -345,6 +353,7 @@ export function App() {
             onKill={(id) => run(() => api.kill(id))}
             onRestart={(id) => run(() => api.restart(id, 80, 24))}
             onDelete={remove}
+            onSetStatus={setStatus}
             onCollapse={() => setCollapsed(true)}
             folders={folders}
             onMove={move}

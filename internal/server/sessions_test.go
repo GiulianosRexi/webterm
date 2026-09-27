@@ -131,12 +131,12 @@ func TestPatchSession(t *testing.T) {
 	srv, _ := newTestServer(t)
 	rec := createSession(t, srv)
 
-	status, body := do(t, srv, "PATCH", "/api/sessions/"+rec.ID, `{"title":"renombrada","kanban_status":"in_progress"}`)
+	status, body := do(t, srv, "PATCH", "/api/sessions/"+rec.ID, `{"title":"renombrada","kanban_status":"needs_testing"}`)
 	if status != http.StatusOK {
 		t.Fatalf("PATCH = %d: %s", status, body)
 	}
 	got := decodeSession(t, body)
-	if got.Title != "renombrada" || got.KanbanStatus != "in_progress" {
+	if got.Title != "renombrada" || got.KanbanStatus != "needs_testing" {
 		t.Fatalf("no se aplicó el patch: %+v", got)
 	}
 

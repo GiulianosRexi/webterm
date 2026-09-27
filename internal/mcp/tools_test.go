@@ -29,7 +29,7 @@ type sessionsFalsas struct {
 func nuevasSesiones() *sessionsFalsas {
 	return &sessionsFalsas{
 		existentes: map[string]*store.Session{
-			"s1": {ID: "s1", Title: "vieja", Description: "ya escrita", Cwd: "/tmp"},
+			"s1": {ID: "s1", Title: "vieja", Description: "ya escrita", Cwd: "/tmp", KanbanStatus: "todo"},
 		},
 		kv: map[string]map[string]string{},
 	}
@@ -65,6 +65,9 @@ func (f *sessionsFalsas) UpdateMeta(id string, p store.MetaPatch) (*store.Sessio
 	}
 	if p.Description != nil {
 		s.Description = *p.Description
+	}
+	if p.KanbanStatus != nil {
+		s.KanbanStatus = *p.KanbanStatus
 	}
 	return s, nil
 }
@@ -531,5 +534,57 @@ func TestListTagsMarcaLosDeLaSesion(t *testing.T) {
 	}
 	if !strings.Contains(out, "consulta: 1 sesión") || strings.Contains(out, "consulta: 1 sesión  <-") {
 		t.Fatalf("salida: %q", out)
+	}
+}
+
+func TestSetYGetStatus(t *testing.T) {
+	f := nuevasSesiones()
+	s := New(f)
+
+	res, _, err := s.getStatus(context.Background(), reqCon("s1"), getStatusArgs{})
+	if err != nil {
+		t.Fatalf("get_status: %v", err)
+	}
+	if got := soloTexto(t, res); !strings.Contains(got, "todo") {
+		t.Fatalf("get_status = %q", got)
+	}
+
+	if _, _, err := s.setStatus(context.Background(), reqCon("s1"),
+		setStatusArgs{Status: "in_review"}); err != nil {
+		t.Fatalf("set_status: %v", err)
+	}
+	if got := f.existentes["s1"].KanbanStatus; got != "in_review" {
+		t.Fatalf("estado = %q", got)
+	}
+}
+
+func TestSetStatusRechazaEstadoInventado(t *testing.T) {
+	f := nuevasSesiones()
+	s := New(f)
+
+	_, _, err := s.setStatus(context.Background(), reqCon("s1"), setStatusArgs{Status: "wip"})
+	if err == nil || !strings.Contains(err.Error(), "in_progress") {
+		t.Fatalf("se esperaba error que liste los válidos, vino %v", err)
+	}
+	if got := f.existentes["s1"].KanbanStatus; got != "todo" {
+		t.Fatalf("el estado cambió igual: %q", got)
+	}
+}
+
+func TestStatusSobreOtraSesion(t *testing.T) {
+	f := nuevasSesiones()
+	f.existentes["s2"] = &store.Session{ID: "s2", KanbanStatus: "todo"}
+	s := New(f)
+
+	if _, _, err := s.setStatus(context.Background(), reqCon("s1"),
+		setStatusArgs{Status: "blocked", SessionID: "s2"}); err != nil {
+		t.Fatalf("set_status: %v", err)
+	}
+	if f.existentes["s2"].KanbanStatus != "blocked" || f.existentes["s1"].KanbanStatus != "todo" {
+		t.Fatal("set_status tocó la sesión equivocada")
+	}
+	if _, _, err := s.getStatus(context.Background(), reqCon("s1"),
+		getStatusArgs{SessionID: "nope"}); err == nil {
+		t.Fatal("get_status sobre una sesión inexistente debería fallar")
 	}
 }

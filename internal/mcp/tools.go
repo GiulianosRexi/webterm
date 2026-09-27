@@ -35,7 +35,7 @@ type linkPRArgs struct {
 
 type listLinksArgs struct{}
 
-// registerTools declara las cinco tools. Ninguna borra nada: deslinkear y
+// registerTools declara las tools. Ninguna borra nada: deslinkear y
 // borrar sesiones son decisiones humanas y la UI ya las tiene.
 func (s *Server) registerTools() {
 	sdk.AddTool(s.mcp, &sdk.Tool{
@@ -74,6 +74,7 @@ func (s *Server) registerTools() {
 
 	s.registerFolderTools()
 	s.registerTagTools()
+	s.registerStatusTools()
 }
 
 func (s *Server) setContext(_ context.Context, req *sdk.CallToolRequest, args setContextArgs) (*sdk.CallToolResult, any, error) {

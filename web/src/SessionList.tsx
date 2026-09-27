@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useMemo, useState } from 'react'
 import type { Folder, Session } from './api'
-import { relative, sessionLabel } from './session'
+import { relative, sessionLabel, statusOf, STATUS_LABEL } from './session'
+import { StatusBadge, statusItems } from './StatusPicker'
 import { Menu, MENU_WIDTH, type MenuItem } from './Menu'
 import {
   ChevronDown,
@@ -78,7 +79,16 @@ function agrupar(sessions: Session[], folders: Folder[]): Grupo[] {
   return grupos
 }
 
-type MenuSesion = { kind: 'session'; id: string; x: number; y: number; moving?: boolean }
+// view elige qué muestra el menú de una sesión: la raíz, la lista de folders
+// o la de estados. Son vistas del mismo menú y no submenús, por lo mismo que
+// explica itemsDeSesion.
+type MenuSesion = {
+  kind: 'session'
+  id: string
+  x: number
+  y: number
+  view?: 'moving' | 'status'
+}
 type MenuState = MenuSesion | { kind: 'folder'; id: string; x: number; y: number }
 
 export function SessionList({
@@ -92,6 +102,7 @@ export function SessionList({
   onKill,
   onRestart,
   onDelete,
+  onSetStatus,
   onCollapse,
   onMove,
   onCreateFolderAndMove,
@@ -108,6 +119,7 @@ export function SessionList({
   onKill: (id: string) => void
   onRestart: (id: string) => void
   onDelete: (id: string) => void
+  onSetStatus: (id: string, status: string) => void
   onCollapse: () => void
   onMove: (sessionId: string, folderId: string | null) => void
   onCreateFolderAndMove: (sessionId: string, name: string) => void
@@ -205,9 +217,18 @@ export function SessionList({
   // que reemplaza el contenido en vez de abrir un submenú flotante —un submenú
   // al lado del borde de la sidebar termina saliéndose de la pantalla.
   const itemsDeSesion = (s: Session, estado: MenuSesion): MenuItem[] => {
-    if (estado.moving) {
+    if (estado.view === 'status') {
+      return [
+        { label: 'Volver', onClick: () => setMenu({ ...estado, view: undefined }) },
+        ...statusItems(statusOf(s), (st) => {
+          cerrarMenu()
+          if (st !== statusOf(s)) onSetStatus(s.id, st)
+        }).map((item, i) => ({ ...item, separated: i === 0 })),
+      ]
+    }
+    if (estado.view === 'moving') {
       const items: MenuItem[] = [
-        { label: 'Volver', onClick: () => setMenu({ ...estado, moving: false }) },
+        { label: 'Volver', onClick: () => setMenu({ ...estado, view: undefined }) },
         {
           label: 'Ninguno',
           current: !s.folder_id,
@@ -244,7 +265,11 @@ export function SessionList({
           startRename(s)
         },
       },
-      { label: 'Mover a…', onClick: () => setMenu({ ...estado, moving: true }) },
+      { label: 'Mover a…', onClick: () => setMenu({ ...estado, view: 'moving' }) },
+      {
+        label: `Estado: ${STATUS_LABEL[statusOf(s)]}…`,
+        onClick: () => setMenu({ ...estado, view: 'status' }),
+      },
     ]
     // starting es la ventana en la que el orquestador ya pidió el spawn y
     // todavía no supo si el daemon lo confirmó. Ni Parar ni Reanudar tienen
@@ -350,6 +375,11 @@ export function SessionList({
             </span>
           ))}
         </span>
+      )}
+      {/* "Not started" es el estado con el que nace toda sesión: mostrarlo
+          en cada fila sería ruido, así que solo se ve lo que se movió. */}
+      {statusOf(s) !== 'todo' && editing !== s.id && (
+        <StatusBadge status={statusOf(s)} compact />
       )}
       <span className="when">{relative(s.last_active_at)}</span>
       {s.pty_status === 'starting' && (
@@ -473,7 +503,13 @@ export function SessionList({
           y={menu.y}
           items={itemsDeSesion(sesionDelMenu, menu as MenuSesion)}
           onClose={cerrarMenu}
-          header={menu.kind === 'session' && menu.moving ? 'Mover a' : undefined}
+          header={
+            menu.kind === 'session' && menu.view
+              ? menu.view === 'moving'
+                ? 'Mover a'
+                : 'Estado'
+              : undefined
+          }
         />
       )}
 

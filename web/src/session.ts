@@ -42,3 +42,35 @@ export function relative(ms: number): string {
   if (secs < 86400) return `hace ${Math.floor(secs / 3600)} h`
   return `hace ${Math.floor(secs / 86400)} d`
 }
+
+// KanbanStatus es el estado de trabajo de una sesión. El orden es el del
+// backend (store.KanbanStatuses): el que sigue el trabajo, y el que usan el
+// selector y el buscador. "todo" es "todavía no arrancó" por compatibilidad:
+// es el default con el que el daemon crea las sesiones.
+export const KANBAN_STATUSES = [
+  'todo',
+  'in_progress',
+  'blocked',
+  'in_review',
+  'needs_testing',
+  'done',
+] as const
+
+export type KanbanStatus = (typeof KANBAN_STATUSES)[number]
+
+export const STATUS_LABEL: Record<KanbanStatus, string> = {
+  todo: 'Not started',
+  in_progress: 'WIP',
+  blocked: 'Blocked',
+  in_review: 'In Review',
+  needs_testing: 'Needs Testing',
+  done: 'Done',
+}
+
+// statusOf tolera valores que el frontend no conoce (una base escrita por otra
+// versión): los trata como "todavía no arrancó" en vez de romper el render.
+export function statusOf(s: Session): KanbanStatus {
+  return (KANBAN_STATUSES as readonly string[]).includes(s.kanban_status)
+    ? (s.kanban_status as KanbanStatus)
+    : 'todo'
+}

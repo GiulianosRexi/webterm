@@ -3,7 +3,8 @@ import { createPortal } from 'react-dom'
 import { Terminal } from '@xterm/xterm'
 import { Folder as FolderIcon, Search } from 'lucide-react'
 import type { Folder, Session } from './api'
-import { relative, sessionLabel } from './session'
+import { relative, sessionLabel, statusOf } from './session'
+import { StatusBadge } from './StatusPicker'
 import { rank } from './fuzzy'
 
 // Vista tipo Exposé: todas las sesiones a la vez, cada una con una miniatura
@@ -248,6 +249,7 @@ function Tile({
       <div className="expose-tile-foot">
         <span className="dot" data-status={s.pty_status} />
         <span className="expose-tile-name">{sessionLabel(s)}</span>
+        {statusOf(s) !== 'todo' && <StatusBadge status={statusOf(s)} compact />}
         {s.tags.map((t) => (
           <span key={t} className="palette-tag">
             {t}

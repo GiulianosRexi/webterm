@@ -1,8 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Folder as FolderIcon, Tag as TagIcon, X } from 'lucide-react'
+import { CircleDot, Folder as FolderIcon, Tag as TagIcon, X } from 'lucide-react'
 import type { Folder, Session } from './api'
-import { allTags, sessionLabel, type TagCount } from './session'
+import {
+  allTags,
+  KANBAN_STATUSES,
+  sessionLabel,
+  STATUS_LABEL,
+  statusOf,
+  type KanbanStatus,
+  type TagCount,
+} from './session'
+import { StatusBadge } from './StatusPicker'
 import { fuzzyMatch, rank, type FuzzyMatch } from './fuzzy'
 
 // Highlight parte el texto en tramos que matchearon y tramos que no, en vez de
@@ -46,11 +55,15 @@ type Item =
     }
   | { kind: 'folder'; folder: Folder; match: FuzzyMatch }
   | { kind: 'tag'; tag: TagCount; match: FuzzyMatch }
+  | { kind: 'status'; status: KanbanStatus; count: number; match: FuzzyMatch }
 
 // Por qué se está acotando la búsqueda: un folder o un tag. Uno a la vez: con
 // dos chips el Backspace tendría que decidir cuál sacar, y el caso de
 // combinarlos todavía no apareció.
-type Filter = { kind: 'folder'; folder: Folder } | { kind: 'tag'; tag: string }
+type Filter =
+  | { kind: 'folder'; folder: Folder }
+  | { kind: 'tag'; tag: string }
+  | { kind: 'status'; status: KanbanStatus }
 
 export function CommandPalette({
   sessions,
@@ -75,7 +88,9 @@ export function CommandPalette({
       ? sessions
       : filtro.kind === 'folder'
         ? sessions.filter((s) => s.folder_id === filtro.folder.id)
-        : sessions.filter((s) => s.tags.includes(filtro.tag))
+        : filtro.kind === 'tag'
+          ? sessions.filter((s) => s.tags.includes(filtro.tag))
+          : sessions.filter((s) => statusOf(s) === filtro.status)
     const folderDe = (s: Session) => folders.find((f) => f.id === s.folder_id) ?? null
 
     // Se busca contra el título, el nombre del folder y los tags juntos: así
@@ -110,6 +125,15 @@ export function CommandPalette({
       for (const r of rank(query, tags, (t) => t.name)) {
         out.push({ kind: 'tag', tag: r.item, match: r.match })
       }
+      // Los estados van en el orden del trabajo y solo los que tienen alguna
+      // sesión: filtrar por uno vacío no lleva a ningún lado.
+      const statuses = KANBAN_STATUSES.map((st) => ({
+        status: st,
+        count: sessions.filter((s) => statusOf(s) === st).length,
+      })).filter((x) => x.count > 0)
+      for (const r of rank(query, statuses, (x) => STATUS_LABEL[x.status])) {
+        out.push({ kind: 'status', status: r.item.status, count: r.item.count, match: r.match })
+      }
     }
     return out
   }, [query, sessions, folders, filtro])
@@ -133,6 +157,11 @@ export function CommandPalette({
     }
     if (item.kind === 'tag') {
       setFiltro({ kind: 'tag', tag: item.tag.name })
+      setQuery('')
+      return
+    }
+    if (item.kind === 'status') {
+      setFiltro({ kind: 'status', status: item.status })
       setQuery('')
       return
     }
@@ -177,12 +206,15 @@ export function CommandPalette({
   // también las sesiones sería ruido, porque son lo que uno viene a buscar.
   const primerFolder = items.findIndex((i) => i.kind === 'folder')
   const primerTag = items.findIndex((i) => i.kind === 'tag')
+  const primerEstado = items.findIndex((i) => i.kind === 'status')
   const itemKey = (item: Item) =>
     item.kind === 'folder'
       ? 'folder' + item.folder.id
       : item.kind === 'tag'
         ? 'tag' + item.tag.name
-        : 'session' + item.session.id
+        : item.kind === 'status'
+          ? 'status' + item.status
+          : 'session' + item.session.id
 
   return createPortal(
     <div className="palette-backdrop" onMouseDown={onClose}>
@@ -196,8 +228,18 @@ export function CommandPalette({
         <div className="palette-campo">
           {filtro && (
             <span className="palette-chip">
-              {filtro.kind === 'folder' ? <FolderIcon size={12} /> : <TagIcon size={12} />}
-              {filtro.kind === 'folder' ? filtro.folder.name : filtro.tag}
+              {filtro.kind === 'folder' ? (
+                <FolderIcon size={12} />
+              ) : filtro.kind === 'tag' ? (
+                <TagIcon size={12} />
+              ) : (
+                <CircleDot size={12} />
+              )}
+              {filtro.kind === 'folder'
+                ? filtro.folder.name
+                : filtro.kind === 'tag'
+                  ? filtro.tag
+                  : STATUS_LABEL[filtro.status]}
               <button
                 onClick={() => setFiltro(null)}
                 title="Quitar el filtro"
@@ -213,10 +255,12 @@ export function CommandPalette({
             value={query}
             placeholder={
               !filtro
-                ? 'Buscar sesión, folder o tag…'
+                ? 'Buscar sesión, folder, tag o estado…'
                 : filtro.kind === 'folder'
                   ? 'Buscar en este folder…'
-                  : 'Buscar con este tag…'
+                  : filtro.kind === 'tag'
+                    ? 'Buscar con este tag…'
+                    : 'Buscar en este estado…'
             }
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={onKeyDown}
@@ -230,6 +274,7 @@ export function CommandPalette({
             <li key={itemKey(item)}>
               {i === primerFolder && <div className="palette-seccion">Folders</div>}
               {i === primerTag && <div className="palette-seccion">Tags</div>}
+              {i === primerEstado && <div className="palette-seccion">Estados</div>}
               <div
                 data-active={i === active}
                 className={
@@ -254,6 +299,9 @@ export function CommandPalette({
                         <Highlight text={t} positions={item.tagPos[ti]} />
                       </span>
                     ))}
+                    {statusOf(item.session) !== 'todo' && filtro?.kind !== 'status' && (
+                      <StatusBadge status={statusOf(item.session)} compact />
+                    )}
                     {item.folder && filtro?.kind !== 'folder' && (
                       <span className="palette-folder">
                         <FolderIcon size={11} />
@@ -263,6 +311,14 @@ export function CommandPalette({
                     {item.session.id === selectedId && (
                       <span className="palette-hint">actual</span>
                     )}
+                  </>
+                ) : item.kind === 'status' ? (
+                  <>
+                    <span className="status-swatch palette-icono" data-kanban={item.status} />
+                    <span className="palette-name">
+                      <Highlight text={STATUS_LABEL[item.status]} positions={item.match.positions} />
+                    </span>
+                    <span className="palette-hint">{item.count} · filtrar</span>
                   </>
                 ) : item.kind === 'tag' ? (
                   <>

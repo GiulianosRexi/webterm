@@ -71,8 +71,8 @@ Cuando una idea se vuelve trabajo concreto, su diseño va a
 
 - [ ] **Dashboard.** Vista de solo lectura sobre las sesiones: agrupar por
       `kanban_status` da un board, `work_status` da las señales de qué necesita
-      atención ahora. Los dos campos ya existen en el schema sin usarse. Era
-      parte de M7.
+      atención ahora. `kanban_status` ya se usa (es el estado de trabajo);
+      `work_status` sigue sin usarse. Era parte de M7.
 
 ## Integraciones
 

@@ -17,6 +17,8 @@ El diseño completo y el roadmap por milestones están en
 - [x] **M10** — daemon de sesiones.
 - [x] **M4** — folders.
 - [x] **Tags** — el tipo de trabajo de cada sesión, con autocompletado.
+- [x] **Estado de trabajo** — Not started, WIP, Blocked, In Review, Needs
+      Testing, Done; a mano desde la UI o por MCP.
 
 Los números son ids estables, no orden de ejecución: M8 fue antes que M3.
 
@@ -387,6 +389,7 @@ Tools disponibles:
 | `list_folders` / `create_folder` / `move_session` | los folders y en cuál está cada sesión |
 | `list_tags` | los tags en uso, con cuántas sesiones lleva cada uno |
 | `tag_session` | agrega y/o saca tags; no toca los que no nombra |
+| `get_status` / `set_status` | el estado de trabajo de la sesión (`todo`, `in_progress`, `blocked`, `in_review`, `needs_testing`, `done`) |
 
 Ninguna borra nada: deslinkear y borrar sesiones siguen siendo decisiones
 humanas, y la UI ya las tiene.

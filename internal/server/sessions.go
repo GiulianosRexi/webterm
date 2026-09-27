@@ -17,11 +17,9 @@ import (
 const maxBodyBytes = 64 << 10
 
 // Enums que la API valida. M7 construye el dashboard sobre estos campos, así
-// que conviene que la base no acumule valores inventados.
-var (
-	workStatuses   = map[string]bool{"idle": true, "working": true, "waiting_input": true, "error": true}
-	kanbanStatuses = map[string]bool{"todo": true, "in_progress": true, "done": true}
-)
+// que conviene que la base no acumule valores inventados. Los de
+// kanban_status viven en store porque el MCP valida contra los mismos.
+var workStatuses = map[string]bool{"idle": true, "working": true, "waiting_input": true, "error": true}
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -136,7 +134,7 @@ func (s *Server) handlePatchSession(w http.ResponseWriter, r *http.Request) {
 		writeErrorMsg(w, http.StatusBadRequest, "work_status inválido")
 		return
 	}
-	if req.KanbanStatus != nil && !kanbanStatuses[*req.KanbanStatus] {
+	if req.KanbanStatus != nil && !store.ValidKanbanStatus(*req.KanbanStatus) {
 		writeErrorMsg(w, http.StatusBadRequest, "kanban_status inválido")
 		return
 	}

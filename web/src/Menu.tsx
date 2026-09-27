@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 
 export interface MenuItem {
@@ -11,6 +11,8 @@ export interface MenuItem {
   // Marca el item como el estado actual (por ejemplo, el folder en el que la
   // sesión ya está).
   current?: boolean
+  // Algo chico antes del label, como el color de un estado.
+  icon?: ReactNode
 }
 
 export const MENU_WIDTH = 200
@@ -85,6 +87,7 @@ export function Menu({
             disabled={item.disabled}
             onClick={item.onClick}
           >
+            {item.icon}
             {item.label}
           </button>
         </div>

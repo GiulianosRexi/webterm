@@ -59,6 +59,11 @@ export const api = {
     req<Session>('/api/sessions', { method: 'POST', body: JSON.stringify(body) }),
   rename: (id: string, title: string) =>
     req<Session>(`/api/sessions/${id}`, { method: 'PATCH', body: JSON.stringify({ title }) }),
+  setStatus: (id: string, status: string) =>
+    req<Session>(`/api/sessions/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ kanban_status: status }),
+    }),
   kill: (id: string) => req<Session>(`/api/sessions/${id}/kill`, { method: 'POST' }),
   restart: (id: string, cols: number, rows: number) =>
     req<Session>(`/api/sessions/${id}/restart`, {
