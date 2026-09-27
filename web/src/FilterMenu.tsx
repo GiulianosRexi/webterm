@@ -67,7 +67,7 @@ export function FilterMenu({
     const out: MenuItem[] = [
       {
         label:
-          'Filtrar status' +
+          'Status' +
           (filters.statuses ? ` · ${filters.statuses.length} de ${KANBAN_STATUSES.length}` : ''),
         onClick: () => setMenu((m) => m && { ...m, view: 'status' }),
       },
