@@ -13,6 +13,8 @@ export interface MenuItem {
   current?: boolean
   // Algo chico antes del label, como el color de un estado.
   icon?: ReactNode
+  // Texto apagado después del label, para un dato secundario.
+  hint?: string
 }
 
 export const MENU_WIDTH = 200
@@ -89,6 +91,7 @@ export function Menu({
           >
             {item.icon}
             {item.label}
+            {item.hint && <span className="menu-hint">{item.hint}</span>}
           </button>
         </div>
       ))}

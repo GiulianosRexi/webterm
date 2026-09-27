@@ -1568,3 +1568,5 @@ pre.context-value {
   background: var(--fg);
   border-color: var(--fg);
 }
+
+.session-menu .menu-hint { margin-left: 6px; color: var(--fg-dim); font-weight: 400; }
