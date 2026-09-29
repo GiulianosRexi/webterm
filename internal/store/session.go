@@ -383,14 +383,15 @@ func (s *Store) ActiveSessions() ([]ActiveSession, error) {
 
 // MarkStarting deja la fila lista para que el daemon la spawnee, borrando los
 // rastros de la salida anterior para que la UI no muestre un exit code al lado
-// de una sesión que está arrancando.
+// de una sesión que está arrancando. También vuelve work_status a idle: el
+// Claude que lo había movido murió con el pty viejo.
 func (s *Store) MarkStarting(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.execAffecting(`
 		UPDATE sessions
 		SET pty_status = ?, exit_reason = NULL, exit_code = NULL, exited_at = NULL,
-		    last_active_at = ?
+		    work_status = 'idle', last_active_at = ?
 		WHERE id = ?`,
 		StatusStarting, time.Now().UnixMilli(), id)
 }

@@ -71,8 +71,8 @@ Cuando una idea se vuelve trabajo concreto, su diseño va a
 
 - [ ] **Dashboard.** Vista de solo lectura sobre las sesiones: agrupar por
       `kanban_status` da un board, `work_status` da las señales de qué necesita
-      atención ahora. `kanban_status` ya se usa (es el estado de trabajo);
-      `work_status` sigue sin usarse. Era parte de M7.
+      atención ahora. `kanban_status` es el estado de trabajo y
+      `work_status` lo mueven los hooks de Claude Code. Era parte de M7.
 
 ## Integraciones
 
@@ -89,9 +89,6 @@ Cuando una idea se vuelve trabajo concreto, su diseño va a
       folder, y si Claude puede crear sesiones sin que el usuario lo vea o hace
       falta alguna confirmación. El criterio que rige hoy es que borrar y crear
       son decisiones humanas y la UI ya las tiene.
-
-- [ ] **Hooks de Claude Code.** Que `work_status` se mueva solo —idle,
-      trabajando, esperando input, error— en vez de a mano. Era M6.
 
 ## Deudas conocidas
 

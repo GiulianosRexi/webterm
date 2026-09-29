@@ -74,3 +74,23 @@ export function statusOf(s: Session): KanbanStatus {
     ? (s.kanban_status as KanbanStatus)
     : 'todo'
 }
+
+// WorkStatus es qué está haciendo Claude ahora en la sesión. Lo mueven los
+// hooks de Claude Code (control.nextWorkStatus); idle es también el estado de
+// toda sesión donde no corre Claude.
+export type WorkStatus = 'idle' | 'working' | 'waiting_input' | 'error'
+
+export const WORK_LABEL: Record<WorkStatus, string> = {
+  idle: 'Idle',
+  working: 'Claude está trabajando',
+  waiting_input: 'Claude espera tu respuesta',
+  error: 'El turno terminó con un error de la API',
+}
+
+// workOf solo reporta estado para un pty vivo: si el proceso murió, lo que
+// haya quedado escrito es de un Claude que ya no existe. También tolera
+// valores desconocidos igual que statusOf.
+export function workOf(s: Session): WorkStatus {
+  if (s.pty_status !== 'running') return 'idle'
+  return s.work_status in WORK_LABEL ? (s.work_status as WorkStatus) : 'idle'
+}

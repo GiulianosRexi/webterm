@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useState } from 'react'
 import type { Folder, Session } from './api'
-import { relative, sessionLabel, statusOf, STATUS_LABEL } from './session'
+import { relative, sessionLabel, statusOf, STATUS_LABEL, WORK_LABEL, workOf, type WorkStatus } from './session'
 import { StatusBadge, statusItems } from './StatusPicker'
 import { FilterMenu } from './FilterMenu'
 import { isFiltering, loadFilters, matches, saveFilters } from './filters'
@@ -9,9 +9,11 @@ import {
   ChevronDown,
   ChevronRight,
   LoaderCircle,
+  MessageCircleQuestionMark,
   MoreHorizontal,
   PanelLeftClose,
   Plus,
+  TriangleAlert,
 } from 'lucide-react'
 
 // Tamaño de los iconos de la sidebar. Uno solo para todos: lo que los hace
@@ -396,6 +398,7 @@ export function SessionList({
       {statusOf(s) !== 'todo' && editing !== s.id && (
         <StatusBadge status={statusOf(s)} compact />
       )}
+      {editing !== s.id && <WorkIndicator status={workOf(s)} />}
       <span className="when">{relative(s.last_active_at)}</span>
       {s.pty_status === 'starting' && (
         <span className="starting-hint" title="La sesión está arrancando">
@@ -585,5 +588,22 @@ export function SessionList({
         </div>
       )}
     </aside>
+  )
+}
+
+// WorkIndicator dice qué está haciendo Claude en la sesión. idle no se dibuja:
+// es el estado de casi todas y de toda sesión sin Claude, así que solo se ve lo
+// que pide atención o está en curso.
+function WorkIndicator({ status }: { status: WorkStatus }) {
+  if (status === 'idle') return null
+  const Icon = {
+    working: LoaderCircle,
+    waiting_input: MessageCircleQuestionMark,
+    error: TriangleAlert,
+  }[status]
+  return (
+    <span className="work" data-work={status} title={WORK_LABEL[status]} aria-label={WORK_LABEL[status]}>
+      <Icon size={12} />
+    </span>
   )
 }

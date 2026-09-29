@@ -346,6 +346,23 @@ body.resizing .terminal-host { pointer-events: none; }
 
 /* Ancho fijo: si midiera su texto, pasar de "recién" a "hace 1 min" movería el
    nombre. 70px es lo que ocupa el caso más largo ("hace 59 min") a 11px. */
+/* Qué está haciendo Claude. working gira en el color apagado —está en curso,
+   no pide nada—; waiting_input y error sí piden atención y llevan color. */
+.session .work {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  color: var(--fg-dim);
+}
+.session .work[data-work="waiting_input"] { color: var(--warn); }
+.session .work[data-work="error"] { color: var(--danger); }
+.session .work[data-work="working"] svg { animation: girar 1s linear infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .session .work[data-work="working"] svg { animation: none; }
+}
+
 .session .when {
   flex: 0 0 70px;
   text-align: right;

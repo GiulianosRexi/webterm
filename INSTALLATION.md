@@ -12,6 +12,8 @@ El estado final es:
   que lo lanzó, así el usuario puede cerrar esa terminal/sesión de Claude sin
   perder el acceso a WebTerm;
 - el servidor MCP `webterm` registrado en Claude Code;
+- los hooks de Claude Code que muestran en la lista qué está haciendo Claude
+  en cada sesión;
 - el `gh` CLI autenticado, para que funcione la integración de PRs;
 - `WEBTERM_TOKEN` exportado en el entorno del usuario.
 
@@ -209,7 +211,59 @@ Fuera de una sesión de WebTerm no existe `WEBTERM_SESSION_ID` y las tools lo
 dicen explícitamente: es esperado. La prueba real es abrir una sesión nueva
 desde la UI, correr `claude` adentro y pedirle que use `set_title`.
 
-## 7. GitHub CLI (integración de PRs)
+## 7. Hooks de Claude Code
+
+Los hooks le avisan al orquestador qué está haciendo Claude en cada sesión
+(trabajando, esperando respuesta, error) y la lista lo muestra. Van en
+`~/.claude/settings.json`, a nivel usuario: afuera de WebTerm la variable de
+sesión llega vacía y el endpoint no hace nada, así que son inocuos en cualquier
+otra terminal.
+
+`-hooks-config` imprime el bloque con el host, puerto y token correctos (el
+JSON por stdout, las notas por stderr). Mergealo con lo que ya haya en el
+archivo — **no lo pises**: el usuario puede tener sus propios hooks y el resto
+de sus settings.
+
+```bash
+cp ~/.claude/settings.json ~/.claude/settings.json.bak 2>/dev/null
+./bin/webterm -addr 0.0.0.0:7788 -hooks-config 2>/dev/null | python3 -c '
+import json, os, sys
+path = os.path.expanduser("~/.claude/settings.json")
+new = json.load(sys.stdin)["hooks"]
+try:
+    settings = json.load(open(path))
+except FileNotFoundError:
+    settings = {}
+hooks = settings.setdefault("hooks", {})
+def ours(group):
+    return all(h.get("url", "").endswith("/api/hooks") for h in group.get("hooks", []))
+for event, groups in new.items():
+    # Saca una instalación anterior de WebTerm y agrega la nueva: correrlo dos
+    # veces deja lo mismo, y los hooks propios del usuario no se tocan.
+    hooks[event] = [g for g in hooks.get(event, []) if not ours(g)] + groups
+json.dump(settings, open(path, "w"), indent=2, ensure_ascii=False)
+print("hooks instalados:", ", ".join(sorted(new)))
+'
+```
+
+Usá el mismo `-addr` (y `-db`) con el que levantaste el orquestador, igual que
+en el paso 6: el header `Authorization` solo aparece si esa combinación pide
+token.
+
+Verificá:
+
+```bash
+python3 -c 'import json,os; print(sorted(json.load(open(os.path.expanduser("~/.claude/settings.json")))["hooks"]))'
+curl -s -o /dev/null -w "%{http_code}\n" -X POST http://127.0.0.1:7788/api/hooks -d '{}'
+# 204 (sin sesión no hace nada; con token, 401 sin el header Authorization — también es esperado)
+```
+
+La prueba real: abrir una sesión nueva desde la UI, correr `claude` adentro y
+mandarle un prompt. Mientras trabaja, la fila muestra un spinner al lado de la
+hora. Las sesiones de Claude que ya estaban abiertas pueden no tomar los hooks
+hasta que se reinicien.
+
+## 8. GitHub CLI (integración de PRs)
 
 El estado de los PRs linkeados sale de `gh`, ejecutado por el **orquestador**
 con su propio entorno. Por eso `gh` tiene que estar en el `PATH` que tenía la
@@ -230,7 +284,7 @@ gh api graphql -f query='{ viewer { login } }'   # la integración usa GraphQL
 Para organizaciones con SSO, el token tiene que estar autorizado para la org
 (`gh auth refresh` si un PR de la org da error de permisos).
 
-## 8. Verificación final
+## 9. Verificación final
 
 ```bash
 ./bin/webterm daemon status                          # pid, protocolo, sesiones vivas

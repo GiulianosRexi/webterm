@@ -79,6 +79,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/sessions/{id}/resources", s.handleLinkResource)
 	mux.HandleFunc("DELETE /api/sessions/{id}/resources/{rid}", s.handleUnlinkResource)
 
+	mux.HandleFunc("POST /api/hooks", s.handleHook)
+
 	mux.HandleFunc("/ws/terminal", s.handleTerminal)
 	mux.HandleFunc("GET /api/events", s.handleEvents)
 

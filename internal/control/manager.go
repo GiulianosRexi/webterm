@@ -77,6 +77,9 @@ type Manager struct {
 	stop     chan struct{}
 	stopOnce sync.Once
 	wg       sync.WaitGroup
+
+	// hookMu serializa ApplyHook, que lee el estado y escribe el siguiente.
+	hookMu sync.Mutex
 }
 
 func NewManager(st *store.Store, pty ptyapi.Client, cfg Config) *Manager {

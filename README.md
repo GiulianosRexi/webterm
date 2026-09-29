@@ -19,6 +19,8 @@ El diseño completo y el roadmap por milestones están en
 - [x] **Tags** — el tipo de trabajo de cada sesión, con autocompletado.
 - [x] **Estado de trabajo** — Not started, WIP, Blocked, In Review, Needs
       Testing, Done; a mano desde la UI o por MCP.
+- [x] **Hooks de Claude Code** — la lista muestra qué está haciendo Claude en
+      cada sesión: trabajando, esperando tu respuesta o con error. Era M6.
 
 Los números son ids estables, no orden de ejecución: M8 fue antes que M3.
 
@@ -75,6 +77,7 @@ Flags del backend:
 | `-db` | `~/.webterm/webterm.db` | base con el estado de las sesiones |
 | `-history-bytes` | `1048576` | cuánto output se guarda por sesión |
 | `-mcp-config` | — | imprime cómo registrar el servidor MCP y sale |
+| `-hooks-config` | — | imprime los hooks de Claude Code para `~/.claude/settings.json` y sale |
 
 El socket, el lock y el log del daemon no son flags propios: se derivan del
 path de `-db` (`~/.webterm/webterm.db` da `webterm.sock`, `webterm.lock` y
@@ -312,6 +315,7 @@ historial, y deja un marcador `— sesión reanudada —` en el stream.
 | `GET` | `/api/sessions/{id}/resources` | recursos linkeados, con su estado |
 | `POST` | `/api/sessions/{id}/resources` | linkea: `{"ref":"https://github.com/o/r/pull/1"}` |
 | `DELETE` | `/api/sessions/{id}/resources/{rid}` | deslinkea |
+| `POST` | `/api/hooks` | recibe los hooks http de Claude Code (ver "Hooks de Claude Code") |
 
 `kill` y `DELETE` están separados a propósito: matar el proceso no tiene por
 qué llevarse el historial.
@@ -396,6 +400,40 @@ humanas, y la UI ya las tiene.
 
 Si Claude corre fuera de una sesión de WebTerm la variable no existe y las tools
 lo dicen explícitamente, en vez de fallar con un id que no se entiende.
+
+## Hooks de Claude Code
+
+`work_status` dice qué está haciendo Claude *ahora* en cada sesión, y lo mueven
+solos los hooks de Claude Code: la lista muestra un spinner mientras trabaja,
+un signo de pregunta ámbar cuando espera tu respuesta y un triángulo rojo si el
+turno murió por un error de la API. `idle` no se dibuja.
+
+Se instalan una sola vez, a nivel usuario:
+
+```bash
+webterm -hooks-config        # imprime el bloque "hooks" con tu host, puerto y token
+```
+
+y el bloque va en `~/.claude/settings.json`. Son hooks `http` que le pegan a
+`POST /api/hooks` con el mismo header de sesión que el MCP; afuera de WebTerm
+Claude Code manda la variable vacía y el endpoint contesta 204 sin hacer nada,
+así que se pueden dejar globales.
+
+| Evento | → `work_status` |
+|---|---|
+| `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure` | `working` |
+| `PreToolUse` de `AskUserQuestion` o `ExitPlanMode` | `waiting_input` |
+| `PermissionRequest`, `Notification` (`permission_prompt`, `elicitation_*`) | `waiting_input` |
+| `Notification` (`idle_prompt`), solo desde `working` | `idle` |
+| `Stop`, `SessionStart`, `SessionEnd` | `idle` |
+| `StopFailure` | `error` |
+
+Los eventos de subagentes (traen `agent_id`) se ignoran: uno en background
+seguiría disparando `PreToolUse` después del `Stop` del principal y dejaría la
+sesión en `working` sin nada que la saque. Son sincrónicos y no `async` para
+que dos eventos seguidos no lleguen dados vuelta, con timeout de 2 s por si el
+orquestador está reiniciando. Reanudar el pty vuelve la sesión a `idle`, y la
+UI no muestra estado para un pty que no está vivo.
 
 ## Protocolo WebSocket (`/ws/terminal?session_id=…`)
 

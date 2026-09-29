@@ -7,6 +7,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -170,6 +171,7 @@ func runOrchestrator() {
 	var historyBytes int64
 	var noAuth bool
 	var printMCP bool
+	var printHooks bool
 
 	flag.StringVar(&cfg.Addr, "addr", "127.0.0.1:7788", "dirección de escucha (0.0.0.0:7788 para exponerlo a la red local)")
 	flag.StringVar(&cfg.StaticDir, "static", "web/dist", "carpeta con el build del frontend")
@@ -179,6 +181,7 @@ func runOrchestrator() {
 	flag.Int64Var(&historyBytes, "history-bytes", session.DefaultHistoryBytes, "cuánto output se guarda por sesión (se reenvía al daemon)")
 	flag.BoolVar(&noAuth, "no-auth", false, "no pedir token aunque escuche en la red (peligroso)")
 	flag.BoolVar(&printMCP, "mcp-config", false, "imprimir cómo registrar el servidor MCP en Claude Code y salir")
+	flag.BoolVar(&printHooks, "hooks-config", false, "imprimir los hooks de Claude Code que mueven el work_status y salir")
 	flag.Parse()
 
 	// El env var y el flag siguen teniendo prioridad; si no hay ninguno, el
@@ -206,6 +209,10 @@ func runOrchestrator() {
 
 	if printMCP {
 		printMCPConfig(cfg.Addr, cfg.Token)
+		return
+	}
+	if printHooks {
+		printHooksConfig(cfg.Addr, cfg.Token)
 		return
 	}
 
@@ -303,6 +310,68 @@ func tokenPath(dbPath string) string {
 	return strings.TrimSuffix(dbPath, filepath.Ext(dbPath)) + ".token"
 }
 
+// hookEvents son los eventos de Claude Code que mueven el work_status (ver
+// control.nextWorkStatus). Registrar de más no rompe nada —el endpoint ignora
+// lo que no conoce— pero cada uno es un request por evento.
+var hookEvents = []string{
+	"SessionStart", "UserPromptSubmit", "PreToolUse", "PermissionRequest",
+	"PostToolUse", "PostToolUseFailure", "Notification", "Stop", "StopFailure",
+	"SessionEnd",
+}
+
+// printHooksConfig imprime el bloque "hooks" para ~/.claude/settings.json.
+//
+// Son hooks http sincrónicos a propósito: con async, dos eventos seguidos
+// (PreToolUse y Stop) pueden llegar dados vuelta y dejar la sesión trabada en
+// working. Contra loopback el costo es imperceptible, y el timeout corto acota
+// lo que Claude espera si el orquestador está caído o reiniciando.
+func printHooksConfig(addr, token string) {
+	headers := map[string]string{"X-Webterm-Session": "${WEBTERM_SESSION_ID}"}
+	allowed := []string{"WEBTERM_SESSION_ID"}
+	if token != "" {
+		headers["Authorization"] = "Bearer ${WEBTERM_TOKEN}"
+		allowed = append(allowed, "WEBTERM_TOKEN")
+	}
+	hook := map[string]any{
+		"type":           "http",
+		"url":            "http://" + loopbackAddr(addr) + "/api/hooks",
+		"headers":        headers,
+		"allowedEnvVars": allowed,
+		"timeout":        2,
+	}
+	hooks := map[string]any{}
+	for _, ev := range hookEvents {
+		hooks[ev] = []any{map[string]any{"hooks": []any{hook}}}
+	}
+	out, err := json.MarshalIndent(map[string]any{"hooks": hooks}, "", "  ")
+	if err != nil {
+		log.Fatal(err)
+	}
+	// Solo el JSON va a stdout, para poder pipearlo al merge de INSTALLATION.md;
+	// las notas van a stderr.
+	fmt.Println(string(out))
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(os.Stderr, "Va en ~/.claude/settings.json (mergeado con los hooks que ya haya).")
+	fmt.Fprintln(os.Stderr, "Afuera de WebTerm la variable llega vacía y el endpoint no hace nada,")
+	fmt.Fprintln(os.Stderr, "así que se puede dejar global.")
+}
+
+// loopbackAddr es host:port de addr como lo usa un cliente de la misma
+// máquina: escuchando en todas las interfaces, la dirección útil es loopback.
+func loopbackAddr(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		host, port = "", ""
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+	if port == "" {
+		port = "7788"
+	}
+	return net.JoinHostPort(host, port)
+}
+
 // printMCPConfig imprime el comando exacto para registrar el servidor MCP.
 //
 // Las comillas simples importan: sin ellas el shell expandiría las variables
@@ -310,20 +379,7 @@ func tokenPath(dbPath string) string {
 // exactamente lo contrario de lo que se busca —la gracia es que Claude Code las
 // resuelva en cada request, contra la sesión desde la que se lo llama.
 func printMCPConfig(addr, token string) {
-	host, port, err := net.SplitHostPort(addr)
-	if err != nil {
-		host, port = "", ""
-	}
-	// Escuchando en todas las interfaces, la dirección útil para el cliente es
-	// loopback: Claude corre en la misma máquina que el backend.
-	if host == "" || host == "0.0.0.0" || host == "::" {
-		host = "127.0.0.1"
-	}
-	if port == "" {
-		port = "7788"
-	}
-
-	fmt.Printf("claude mcp add --transport http webterm http://%s:%s/mcp \\\n", host, port)
+	fmt.Printf("claude mcp add --transport http webterm http://%s/mcp \\\n", loopbackAddr(addr))
 	fmt.Printf("  -H 'X-Webterm-Session: ${WEBTERM_SESSION_ID}'")
 	if token != "" {
 		fmt.Printf(" \\\n  -H 'Authorization: Bearer ${WEBTERM_TOKEN}'")
