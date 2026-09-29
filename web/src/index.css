@@ -346,26 +346,32 @@ body.resizing .terminal-host { pointer-events: none; }
 
 /* Ancho fijo: si midiera su texto, pasar de "recién" a "hace 1 min" movería el
    nombre. 70px es lo que ocupa el caso más largo ("hace 59 min") a 11px. */
-/* Qué está haciendo Claude, en el lugar del punto. working gira en el color
-   apagado —está en curso, no pide nada—; waiting_input y error sí piden
-   atención y llevan color. La caja mide lo mismo que el punto y el ícono
-   desborda centrado: así el nombre no se corre cuando uno reemplaza al otro. */
-.session .work {
-  flex: 0 0 7px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 7px;
-  height: 20px;
-  overflow: visible;
-  color: var(--fg-dim);
+/* Qué está haciendo Claude, en el lugar de la hora. working va en el azul de
+   WIP —el color de "en curso" en toda la UI— con un brillo que lo recorre;
+   waiting_input en ámbar y error en rojo, que son los que piden atención. */
+.session .when.work[data-work="waiting_input"] { color: var(--warn); }
+.session .when.work[data-work="error"] { color: var(--danger); }
+.session .when.work[data-work="working"] {
+  background: linear-gradient(
+      90deg,
+      var(--kanban-in_progress) 40%,
+      #cfe4ff 50%,
+      var(--kanban-in_progress) 60%
+    )
+    0 0 / 300% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer 2s linear infinite;
 }
-.session .work[data-work="waiting_input"] { color: var(--warn); }
-.session .work[data-work="error"] { color: var(--danger); }
-.session .work[data-work="working"] svg { animation: girar 1s linear infinite; }
+
+@keyframes shimmer {
+  from { background-position: 100% 0; }
+  to { background-position: 0 0; }
+}
 
 @media (prefers-reduced-motion: reduce) {
-  .session .work[data-work="working"] svg { animation: none; }
+  .session .when.work[data-work="working"] { animation: none; }
 }
 
 .session .when {

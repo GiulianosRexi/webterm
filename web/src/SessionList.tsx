@@ -9,11 +9,9 @@ import {
   ChevronDown,
   ChevronRight,
   LoaderCircle,
-  MessageCircleQuestionMark,
   MoreHorizontal,
   PanelLeftClose,
   Plus,
-  TriangleAlert,
 } from 'lucide-react'
 
 // Tamaño de los iconos de la sidebar. Uno solo para todos: lo que los hace
@@ -355,13 +353,7 @@ export function SessionList({
         setMenu({ kind: 'session', id: s.id, x: e.clientX, y: e.clientY })
       }}
     >
-      {/* Mientras Claude hace algo, su ícono ocupa el lugar del punto: los
-          dos dicen en qué anda la sesión, y el ícono es lo más urgente. */}
-      {workOf(s) === 'idle' ? (
-        <span className="dot" data-status={s.pty_status} />
-      ) : (
-        <WorkIndicator status={workOf(s)} />
-      )}
+      <span className="dot" data-status={s.pty_status} />
       {editing === s.id ? (
         <input
           className="rename"
@@ -404,7 +396,9 @@ export function SessionList({
       {statusOf(s) !== 'todo' && editing !== s.id && (
         <StatusBadge status={statusOf(s)} compact />
       )}
-      <span className="when">{relative(s.last_active_at)}</span>
+      {/* Mientras Claude hace algo, eso reemplaza a la hora: los dos dicen
+          en qué anda la sesión, y lo que pasa ahora es más urgente. */}
+      <WhenOrWork s={s} />
       {s.pty_status === 'starting' && (
         <span className="starting-hint" title="La sesión está arrancando">
           <LoaderCircle size={12} />
@@ -596,19 +590,20 @@ export function SessionList({
   )
 }
 
-// WorkIndicator dice qué está haciendo Claude en la sesión. idle no se dibuja:
-// es el estado de casi todas y de toda sesión sin Claude, así que solo se ve lo
-// que pide atención o está en curso.
-function WorkIndicator({ status }: { status: WorkStatus }) {
-  if (status === 'idle') return null
-  const Icon = {
-    working: LoaderCircle,
-    waiting_input: MessageCircleQuestionMark,
-    error: TriangleAlert,
-  }[status]
+// WhenOrWork dice qué está haciendo Claude en la sesión, en texto y en el
+// lugar de la hora. En idle muestra la hora de siempre.
+const WORK_SHORT: Record<Exclude<WorkStatus, 'idle'>, string> = {
+  working: 'Working…',
+  waiting_input: 'Asking…',
+  error: 'Error',
+}
+
+function WhenOrWork({ s }: { s: Session }) {
+  const status = workOf(s)
+  if (status === 'idle') return <span className="when">{relative(s.last_active_at)}</span>
   return (
-    <span className="work" data-work={status} title={WORK_LABEL[status]} aria-label={WORK_LABEL[status]}>
-      <Icon size={12} />
+    <span className="when work" data-work={status} title={WORK_LABEL[status]}>
+      {WORK_SHORT[status]}
     </span>
   )
 }

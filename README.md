@@ -404,9 +404,10 @@ lo dicen explícitamente, en vez de fallar con un id que no se entiende.
 ## Hooks de Claude Code
 
 `work_status` dice qué está haciendo Claude *ahora* en cada sesión, y lo mueven
-solos los hooks de Claude Code: la lista muestra un spinner mientras trabaja,
-un signo de pregunta ámbar cuando espera tu respuesta y un triángulo rojo si el
-turno murió por un error de la API. `idle` no se dibuja.
+solos los hooks de Claude Code: en el lugar de la hora, la lista muestra
+"Working…" con un brillo mientras trabaja, "Asking…" en ámbar cuando espera tu
+respuesta y "Error" en rojo si el turno murió por un error de la API. En `idle`
+se ve la hora de siempre.
 
 Se instalan una sola vez, a nivel usuario:
 
