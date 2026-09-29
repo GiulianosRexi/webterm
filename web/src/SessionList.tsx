@@ -355,7 +355,13 @@ export function SessionList({
         setMenu({ kind: 'session', id: s.id, x: e.clientX, y: e.clientY })
       }}
     >
-      <span className="dot" data-status={s.pty_status} />
+      {/* Mientras Claude hace algo, su ícono ocupa el lugar del punto: los
+          dos dicen en qué anda la sesión, y el ícono es lo más urgente. */}
+      {workOf(s) === 'idle' ? (
+        <span className="dot" data-status={s.pty_status} />
+      ) : (
+        <WorkIndicator status={workOf(s)} />
+      )}
       {editing === s.id ? (
         <input
           className="rename"
@@ -398,7 +404,6 @@ export function SessionList({
       {statusOf(s) !== 'todo' && editing !== s.id && (
         <StatusBadge status={statusOf(s)} compact />
       )}
-      {editing !== s.id && <WorkIndicator status={workOf(s)} />}
       <span className="when">{relative(s.last_active_at)}</span>
       {s.pty_status === 'starting' && (
         <span className="starting-hint" title="La sesión está arrancando">
