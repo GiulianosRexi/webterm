@@ -348,10 +348,13 @@ body.resizing .terminal-host { pointer-events: none; }
    nombre. 70px es lo que ocupa el caso más largo ("hace 59 min") a 11px. */
 /* Qué está haciendo Claude, en el lugar de la hora. working va en el azul de
    WIP —el color de "en curso" en toda la UI— con un brillo que lo recorre;
-   waiting_input en ámbar y error en rojo, que son los que piden atención. */
+   subagents, igual pero más tenue: sigue en curso, aunque Claude ya terminó
+   su parte. waiting_input en ámbar y error en rojo, que son los que piden
+   atención. */
 .session .when.work[data-work="waiting_input"] { color: var(--warn); }
 .session .when.work[data-work="error"] { color: var(--danger); }
-.session .when.work[data-work="working"] {
+.session .when.work[data-work="working"],
+.session .when.work[data-work="subagents"] {
   background: linear-gradient(
       90deg,
       var(--kanban-in_progress) 40%,
@@ -370,8 +373,11 @@ body.resizing .terminal-host { pointer-events: none; }
   to { background-position: 0 0; }
 }
 
+.session .when.work[data-work="subagents"] { opacity: 0.6; }
+
 @media (prefers-reduced-motion: reduce) {
-  .session .when.work[data-work="working"] { animation: none; }
+  .session .when.work[data-work="working"],
+  .session .when.work[data-work="subagents"] { animation: none; }
 }
 
 .session .when {

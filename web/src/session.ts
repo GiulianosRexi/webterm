@@ -78,13 +78,29 @@ export function statusOf(s: Session): KanbanStatus {
 // WorkStatus es qué está haciendo Claude ahora en la sesión. Lo mueven los
 // hooks de Claude Code (control.nextWorkStatus); idle es también el estado de
 // toda sesión donde no corre Claude.
-export type WorkStatus = 'idle' | 'working' | 'waiting_input' | 'error'
+export type WorkStatus = 'idle' | 'working' | 'waiting_input' | 'error' | 'subagents'
 
-export const WORK_LABEL: Record<WorkStatus, string> = {
-  idle: 'Idle',
-  working: 'Claude está trabajando',
-  waiting_input: 'Claude espera tu respuesta',
-  error: 'El turno terminó con un error de la API',
+const WORK_STATUSES: readonly WorkStatus[] = ['idle', 'working', 'waiting_input', 'error', 'subagents']
+
+// agentsCount es "1 subagente" / "2 subagentes": se usa en la descripción larga.
+function agentsCount(n: number): string {
+  return n === 1 ? '1 subagente' : `${n} subagentes`
+}
+
+// workLabel es la descripción larga del estado, para el tooltip.
+export function workLabel(status: WorkStatus, agents: number): string {
+  switch (status) {
+    case 'idle':
+      return 'Idle'
+    case 'working':
+      return 'Claude está trabajando'
+    case 'waiting_input':
+      return 'Claude espera tu respuesta'
+    case 'error':
+      return 'El turno terminó con un error de la API'
+    case 'subagents':
+      return `Claude terminó; esperando a ${agentsCount(agents)}`
+  }
 }
 
 // workOf solo reporta estado para un pty vivo: si el proceso murió, lo que
@@ -92,5 +108,7 @@ export const WORK_LABEL: Record<WorkStatus, string> = {
 // valores desconocidos igual que statusOf.
 export function workOf(s: Session): WorkStatus {
   if (s.pty_status !== 'running') return 'idle'
-  return s.work_status in WORK_LABEL ? (s.work_status as WorkStatus) : 'idle'
+  return (WORK_STATUSES as readonly string[]).includes(s.work_status)
+    ? (s.work_status as WorkStatus)
+    : 'idle'
 }

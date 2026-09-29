@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useState } from 'react'
 import type { Folder, Session } from './api'
-import { relative, sessionLabel, statusOf, STATUS_LABEL, WORK_LABEL, workOf, type WorkStatus } from './session'
+import { relative, sessionLabel, statusOf, STATUS_LABEL, workLabel, workOf } from './session'
 import { StatusBadge, statusItems } from './StatusPicker'
 import { FilterMenu } from './FilterMenu'
 import { isFiltering, loadFilters, matches, saveFilters } from './filters'
@@ -592,18 +592,19 @@ export function SessionList({
 
 // WhenOrWork dice qué está haciendo Claude en la sesión, en texto y en el
 // lugar de la hora. En idle muestra la hora de siempre.
-const WORK_SHORT: Record<Exclude<WorkStatus, 'idle'>, string> = {
-  working: 'Working…',
-  waiting_input: 'Asking…',
-  error: 'Error',
-}
-
 function WhenOrWork({ s }: { s: Session }) {
   const status = workOf(s)
   if (status === 'idle') return <span className="when">{relative(s.last_active_at)}</span>
+  const short = {
+    working: 'Working…',
+    waiting_input: 'Asking…',
+    error: 'Error',
+    // "Subagents working…" no entra en la columna de la hora.
+    subagents: s.running_agents === 1 ? '1 agent…' : `${s.running_agents} agents…`,
+  }[status]
   return (
-    <span className="when work" data-work={status} title={WORK_LABEL[status]}>
-      {WORK_SHORT[status]}
+    <span className="when work" data-work={status} title={workLabel(status, s.running_agents)}>
+      {short}
     </span>
   )
 }

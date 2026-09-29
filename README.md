@@ -405,9 +405,10 @@ lo dicen explícitamente, en vez de fallar con un id que no se entiende.
 
 `work_status` dice qué está haciendo Claude *ahora* en cada sesión, y lo mueven
 solos los hooks de Claude Code: en el lugar de la hora, la lista muestra
-"Working…" con un brillo mientras trabaja, "Asking…" en ámbar cuando espera tu
-respuesta y "Error" en rojo si el turno murió por un error de la API. En `idle`
-se ve la hora de siempre.
+"Working…" con un brillo mientras trabaja, "2 agents…" más tenue cuando
+terminó su turno pero quedan subagentes corriendo, "Asking…" en ámbar cuando
+espera tu respuesta y "Error" en rojo si el turno murió por un error de la API.
+En `idle` se ve la hora de siempre.
 
 Se instalan una sola vez, a nivel usuario:
 
@@ -425,13 +426,19 @@ así que se pueden dejar globales.
 | `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure` | `working` |
 | `PreToolUse` de `AskUserQuestion` o `ExitPlanMode` | `waiting_input` |
 | `PermissionRequest`, `Notification` (`permission_prompt`, `elicitation_*`) | `waiting_input` |
-| `Notification` (`idle_prompt`), solo desde `working` | `idle` |
-| `Stop`, `SessionStart`, `SessionEnd` | `idle` |
+| `Stop`; `Notification` (`idle_prompt`), solo desde `working` | `idle`, o `subagents` si quedan subagentes corriendo |
+| `SubagentStop` del último subagente, desde `subagents` | `idle` |
+| `SessionStart`, `SessionEnd` (salvo `SessionStart` de una compactación) | `idle` |
 | `StopFailure` | `error` |
 
-Los eventos de subagentes (traen `agent_id`) se ignoran: uno en background
-seguiría disparando `PreToolUse` después del `Stop` del principal y dejaría la
-sesión en `working` sin nada que la saque. Son sincrónicos y no `async` para
+`SubagentStart` y `SubagentStop` llevan la cuenta de subagentes corriendo en
+`session_agents`, en la base y no en memoria para que sobreviva a un reinicio
+del orquestador; la API la expone como `running_agents`. Un subagente que
+nunca avisó que terminó deja de contar a las 4 horas, y `SessionStart`,
+`SessionEnd` y reanudar el pty los olvidan a todos. El resto de los eventos de
+subagentes (traen `agent_id`) se ignoran: uno en background seguiría
+disparando `PreToolUse` después del `Stop` del principal y dejaría la sesión
+en `working`. Son sincrónicos y no `async` para
 que dos eventos seguidos no lleguen dados vuelta, con timeout de 2 s por si el
 orquestador está reiniciando. Reanudar el pty vuelve la sesión a `idle`, y la
 UI no muestra estado para un pty que no está vivo.

@@ -60,6 +60,9 @@ type Session struct {
 	// Tags no es una columna de sessions sino de session_tags (ver schemaV4).
 	// Los getters la completan; CreateSession la ignora.
 	Tags []string `json:"tags"`
+	// RunningAgents tampoco es columna: sale de session_agents (ver
+	// schemaV5). Son los subagentes de Claude Code que siguen corriendo.
+	RunningAgents int `json:"running_agents"`
 }
 
 // MetaPatch es un update parcial: los campos en nil no se tocan.
@@ -172,6 +175,9 @@ func (s *Store) GetSession(id string) (*Session, error) {
 	if sess.Tags, err = s.sessionTags(id); err != nil {
 		return nil, err
 	}
+	if sess.RunningAgents, err = s.runningAgents(id); err != nil {
+		return nil, err
+	}
 	return sess, nil
 }
 
@@ -199,10 +205,15 @@ func (s *Store) ListSessions() ([]*Session, error) {
 	if err != nil {
 		return nil, err
 	}
+	agents, err := s.allRunningAgents()
+	if err != nil {
+		return nil, err
+	}
 	for _, sess := range out {
 		if sess.Tags = tags[sess.ID]; sess.Tags == nil {
 			sess.Tags = []string{}
 		}
+		sess.RunningAgents = agents[sess.ID]
 	}
 	return out, nil
 }
@@ -383,11 +394,14 @@ func (s *Store) ActiveSessions() ([]ActiveSession, error) {
 
 // MarkStarting deja la fila lista para que el daemon la spawnee, borrando los
 // rastros de la salida anterior para que la UI no muestre un exit code al lado
-// de una sesión que está arrancando. También vuelve work_status a idle: el
-// Claude que lo había movido murió con el pty viejo.
+// de una sesión que está arrancando. También vuelve work_status a idle y
+// olvida los subagentes: el Claude que los había movido murió con el pty viejo.
 func (s *Store) MarkStarting(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if _, err := s.db.Exec(`DELETE FROM session_agents WHERE session_id = ?`, id); err != nil {
+		return fmt.Errorf("limpiando subagentes de %s: %w", id, err)
+	}
 	return s.execAffecting(`
 		UPDATE sessions
 		SET pty_status = ?, exit_reason = NULL, exit_code = NULL, exited_at = NULL,

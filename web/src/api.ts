@@ -24,6 +24,9 @@ export interface Session {
   // Tipo de trabajo —bugfix, consulta, implementación—. Vienen normalizados
   // del backend (minúsculas, guiones) y ordenados.
   tags: string[]
+  // Subagentes de Claude Code que siguen corriendo en la sesión, según los
+  // hooks SubagentStart/SubagentStop.
+  running_agents: number
 }
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {

@@ -21,7 +21,7 @@ package store
 // daemon.ProtocolVersion y avisar que hace falta `webterm daemon restart`
 // —que mata las sesiones, y por eso es explícito—. Lo mismo está resumido en el
 // README, en "Arquitectura: daemon y orquestador".
-var migrations = []string{schemaV1, schemaV2, schemaV3, schemaV4}
+var migrations = []string{schemaV1, schemaV2, schemaV3, schemaV4, schemaV5}
 
 // schemaV1 define el modelo completo de sesión del diseño, incluidos los
 // campos que la UI de M2 todavía no usa (folder_id es M4, work_status y
@@ -128,4 +128,22 @@ CREATE TABLE session_tags (
 );
 
 CREATE INDEX idx_session_tags_tag ON session_tags(tag);
+`
+
+// schemaV5 agrega los subagentes de Claude Code que siguen corriendo en cada
+// sesión, según los hooks SubagentStart y SubagentStop. Es lo que permite decir
+// "Claude terminó pero espera a sus subagentes" en vez de idle.
+//
+// Va en la base y no en memoria porque el orquestador se reinicia todo el
+// tiempo mientras se desarrolla WebTerm: en memoria, un reinicio con subagentes
+// en vuelo perdería la cuenta. Tabla nueva con cascada, como session_tags, así
+// que es aditiva y el daemon no se entera. started_at existe para descartar a
+// los que nunca avisaron que terminaron (ver AgentStaleAfter).
+const schemaV5 = `
+CREATE TABLE session_agents (
+  session_id TEXT    NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  agent_id   TEXT    NOT NULL,
+  started_at INTEGER NOT NULL,
+  PRIMARY KEY (session_id, agent_id)
+);
 `

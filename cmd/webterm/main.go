@@ -316,7 +316,7 @@ func tokenPath(dbPath string) string {
 var hookEvents = []string{
 	"SessionStart", "UserPromptSubmit", "PreToolUse", "PermissionRequest",
 	"PostToolUse", "PostToolUseFailure", "Notification", "Stop", "StopFailure",
-	"SessionEnd",
+	"SubagentStart", "SubagentStop", "SessionEnd",
 }
 
 // printHooksConfig imprime el bloque "hooks" para ~/.claude/settings.json.

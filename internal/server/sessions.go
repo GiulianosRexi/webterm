@@ -19,7 +19,7 @@ const maxBodyBytes = 64 << 10
 // Enums que la API valida. M7 construye el dashboard sobre estos campos, así
 // que conviene que la base no acumule valores inventados. Los de
 // kanban_status viven en store porque el MCP valida contra los mismos.
-var workStatuses = map[string]bool{"idle": true, "working": true, "waiting_input": true, "error": true}
+var workStatuses = map[string]bool{"idle": true, "working": true, "waiting_input": true, "error": true, "subagents": true}
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
