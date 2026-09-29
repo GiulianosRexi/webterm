@@ -1061,10 +1061,18 @@ pre.context-value {
 
 .folder-count {
   flex: 0 0 auto;
+  display: inline-flex;
+  gap: 6px;
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   color: var(--fg-dim);
 }
+
+/* Los mismos colores que el estado de cada fila: azul de WIP para working,
+   ámbar para asking, rojo para error. */
+.folder-work[data-work="working"] { color: var(--kanban-in_progress); }
+.folder-work[data-work="waiting_input"] { color: var(--warn); }
+.folder-work[data-work="error"] { color: var(--danger); }
 
 /* Solo se indenta lo que está adentro de un folder. Las sueltas quedan al ras,
    como los archivos en la raíz de un explorador: la sangría es lo que dice qué

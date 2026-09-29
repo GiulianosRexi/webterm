@@ -495,7 +495,7 @@ export function SessionList({
                     {g.folder!.name}
                   </span>
                 )}
-                <span className="folder-count">{g.sessions.length}</span>
+                <FolderCounts sessions={g.sessions} />
               </li>
             )}
 
@@ -587,6 +587,37 @@ export function SessionList({
         </div>
       )}
     </aside>
+  )
+}
+
+// FolderCounts es el total de sesiones del folder seguido de cuántas tienen a
+// Claude trabajando, esperando respuesta o con error, para ver cómo viene sin
+// abrirlo. Solo aparecen las cuentas que no son cero. subagents cuenta como
+// working: sigue habiendo trabajo en curso y no pide nada.
+function FolderCounts({ sessions }: { sessions: Session[] }) {
+  const counts = { working: 0, waiting_input: 0, error: 0 }
+  for (const s of sessions) {
+    const w = workOf(s)
+    if (w === 'working' || w === 'subagents') counts.working++
+    else if (w === 'waiting_input' || w === 'error') counts[w]++
+  }
+  const titles = {
+    working: 'con Claude trabajando',
+    waiting_input: 'esperando tu respuesta',
+    error: 'con error de la API',
+  }
+  return (
+    <span className="folder-count">
+      <span title="sesiones">{sessions.length}</span>
+      {(Object.keys(counts) as (keyof typeof counts)[]).map(
+        (k) =>
+          counts[k] > 0 && (
+            <span key={k} className="folder-work" data-work={k} title={`${counts[k]} ${titles[k]}`}>
+              {counts[k]}
+            </span>
+          ),
+      )}
+    </span>
   )
 }
 
