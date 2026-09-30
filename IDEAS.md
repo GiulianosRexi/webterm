@@ -33,6 +33,23 @@ Cuando una idea se vuelve trabajo concreto, su diseño va a
       una sección aparte, solo desde el buscador); y si desarchivar reanuda el
       pty o solo la saca del archivo y se reanuda aparte.
 
+- [ ] **Seleccionar varias sesiones.** `Cmd+click` para sumar o sacar sueltas
+      y `Shift+click` para tomar un rango, como en cualquier lista. Hoy la
+      selección es de a una y además significa "mirar esta terminal", así que
+      hay que resolver cómo convive seleccionar-para-operar con
+      seleccionar-para-ver: probablemente la selección múltiple no cambie qué
+      terminal se está mirando.
+
+- [ ] **Acciones en lote.** Sobre la selección múltiple: taggear, cambiar el
+      estado o mover a un folder, todo de una. Es lo que le da sentido a lo
+      anterior —seleccionar varias sin poder hacerles nada no sirve— y las tres
+      acciones ya existen de a una, así que es sobre todo UI y un endpoint que
+      acepte varias sesiones en vez de N requests.
+
+      A decidir: qué muestra la barra de acciones cuando la selección es
+      heterogénea (unas con el tag y otras no), y si taggear en lote agrega o
+      reemplaza.
+
 - [ ] **Subfolders.** Solo si aparece la necesidad de dividir un proyecto
       grande. Agregar `parent_id` a `folders` es una migración aditiva más. Ojo:
       el caso que lo justificaría (frontend / backend dentro de un proyecto) lo
