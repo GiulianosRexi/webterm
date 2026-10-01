@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { Components } from 'react-markdown'
-import { Check, Pencil, Plus, Trash2, X } from 'lucide-react'
+import { Check, Download, Pencil, Plus, Trash2, X } from 'lucide-react'
 import { api } from './api'
 import { MermaidDiagram } from './MermaidDiagram'
 
@@ -26,6 +26,22 @@ const markdownComponents: Components = {
   },
 }
 
+// downloadMarkdown baja el valor como un .md a la carpeta de descargas del
+// navegador. Todo en el cliente: un Blob y un <a download>, sin pasar por el
+// server. Se sacan del nombre los caracteres que los sistemas de archivos no
+// aceptan, y la extensión no se duplica si la clave ya la trae.
+function downloadMarkdown(sessionName: string, entry: Entry) {
+  const clean = (s: string) => s.replace(/[\\/:*?"<>|\x00-\x1f]+/g, '-').trim()
+  const key = entry.key.replace(/\.md$/i, '')
+  const filename = `${clean(sessionName)}-${clean(key)}.md`
+  const url = URL.createObjectURL(new Blob([entry.value], { type: 'text/markdown;charset=utf-8' }))
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
 const toEntries = (kv: Record<string, string>): Entry[] =>
   Object.entries(kv)
     .map(([key, value]) => ({ key, value }))
@@ -33,11 +49,13 @@ const toEntries = (kv: Record<string, string>): Entry[] =>
 
 export function ContextPanel({
   sessionId,
+  sessionName,
   reloadKey,
   markdown,
   onCount,
 }: {
   sessionId: string
+  sessionName: string
   reloadKey: number
   markdown: boolean
   onCount: (n: number) => void
@@ -127,6 +145,7 @@ export function ContextPanel({
             entry={entry}
             markdown={markdown}
             busy={busy}
+            onDownload={() => downloadMarkdown(sessionName, entry)}
             onEdit={() => setEditingKey(entry.key)}
             onDelete={() => void remove(entry.key)}
           />
@@ -155,12 +174,14 @@ function ContextCard({
   entry,
   markdown,
   busy,
+  onDownload,
   onEdit,
   onDelete,
 }: {
   entry: Entry
   markdown: boolean
   busy: boolean
+  onDownload: () => void
   onEdit: () => void
   onDelete: () => void
 }) {
@@ -169,6 +190,9 @@ function ContextCard({
       <header>
         <span className="context-key">{entry.key}</span>
         <span className="context-actions">
+          <button onClick={onDownload} title="Descargar .md" aria-label="Descargar .md">
+            <Download size={13} />
+          </button>
           <button onClick={onEdit} disabled={busy} title="Editar" aria-label="Editar">
             <Pencil size={13} />
           </button>

@@ -30,9 +30,11 @@ function storedWidth(): number {
 
 export function RightPanel({
   sessionId,
+  sessionName,
   reloadKey,
 }: {
   sessionId: string
+  sessionName: string
   reloadKey: number
 }) {
   const [collapsed, setCollapsed] = useState(
@@ -181,6 +183,7 @@ export function RightPanel({
           <div style={tab === 'context' ? undefined : { display: 'none' }}>
             <ContextPanel
               sessionId={sessionId}
+              sessionName={sessionName}
               reloadKey={reloadKey}
               markdown={markdown}
               onCount={setContextCount}

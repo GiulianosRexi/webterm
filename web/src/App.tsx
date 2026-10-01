@@ -15,7 +15,7 @@ import { useEvents, type ServerEvent } from './useEvents'
 import { CommandPalette } from './CommandPalette'
 import { Expose } from './Expose'
 import { TagEditor } from './TagEditor'
-import { allTags, statusOf } from './session'
+import { allTags, sessionLabel, statusOf } from './session'
 import { StatusPicker } from './StatusPicker'
 import { LayoutGrid, PanelLeftOpen } from 'lucide-react'
 
@@ -401,7 +401,12 @@ export function App() {
         </main>
 
         {selected && (
-          <RightPanel key={'right-' + selected} sessionId={selected} reloadKey={panelTick} />
+          <RightPanel
+            key={'right-' + selected}
+            sessionId={selected}
+            sessionName={current ? sessionLabel(current) : selected.slice(-6)}
+            reloadKey={panelTick}
+          />
         )}
       </div>
 
